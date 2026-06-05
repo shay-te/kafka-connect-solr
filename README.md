@@ -62,6 +62,12 @@ Helpers: `SolrClientFactory`, `SolrVersionDetector`, `RetryUtil`,
 | `schema.auto.create`         | `false`     | Try to create the collection on SolrCloud                          |
 | `schema.auto.evolve`         | `false`     | Auto-add new fields to managed schema                              |
 | `commit.within.ms`           | `1000`      | Solr `commitWithin` sent with every batch                          |
+| `streaming.enabled`          | `false`     | Wrap the client in `ConcurrentUpdateHttp2SolrClient` (HTTP/2 streaming). Standalone Solr only; forces sync offsets |
+| `streaming.queue.size`       | `10000`     | Internal queue when `streaming.enabled=true`                       |
+| `streaming.threads`          | `4`         | Streaming worker threads when `streaming.enabled=true`             |
+| `partition.fanout.enabled`   | `false`     | One BulkProcessor per Kafka partition (use when tasks.max < partitions) |
+| `dry.run`                    | `false`     | Log intended Solr actions without writing                          |
+| `mapping.version`            | `""`        | If set, stamp every doc with `_mapping_version=<value>`            |
 
 \* exactly one of `solr.url` / `solr.zk.host` must be set.
 

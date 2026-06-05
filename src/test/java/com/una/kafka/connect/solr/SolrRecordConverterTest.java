@@ -52,7 +52,7 @@ class SolrRecordConverterTest {
     void tombstoneReturnsNull() {
         SolrRecordConverter converter = new SolrRecordConverter(newConfig(new HashMap<>()));
         SinkRecord r = new SinkRecord("users", 0, Schema.STRING_SCHEMA, "k", null, null, 1L);
-        assertThat(converter.convert(r)).isNull();
+        assertThat((Object) converter.convert(r)).isNull();
     }
 
     @Test

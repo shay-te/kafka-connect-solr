@@ -16,20 +16,6 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
-/**
- * Public entry point for {@link SolrSinkTask}. Two modes:
- *
- * <ul>
- *     <li><b>Shared</b> (default): one {@link SolrBulkProcessor} per task.
- *         Every record from every partition lands in the same per-collection
- *         buffers. Fine when {@code tasks.max == partition count}.</li>
- *     <li><b>Per-partition fanout</b> ({@code partition.fanout.enabled=true}):
- *         each assigned Kafka partition gets its own dedicated
- *         {@link SolrBulkProcessor} with independent buffers and inflight
- *         pool. Partitions never wait for each other's batches - real
- *         concurrency multiplied by partition count.</li>
- * </ul>
- */
 public final class SolrWriter implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(SolrWriter.class);
@@ -45,8 +31,6 @@ public final class SolrWriter implements AutoCloseable {
     private final Set<String> topicsIgnoreKey;
     private final Set<String> topicsIgnoreSchema;
 
-    // Hot config values cached at construction — avoid re-reading from
-    // AbstractConfig.getBoolean/getString per record.
     private final boolean keyIgnoreGlobal;
     private final boolean externalVersioningEnabled;
     private final String externalVersionHeader;
@@ -54,7 +38,6 @@ public final class SolrWriter implements AutoCloseable {
     private final BehaviorOnMalformed behaviorOnMalformed;
 
     private final boolean partitionFanout;
-    // Exactly one of these two is non-null based on partitionFanout.
     private final SolrBulkProcessor sharedProcessor;
     private final ConcurrentMap<TopicPartition, SolrBulkProcessor> perPartition;
 
@@ -85,7 +68,6 @@ public final class SolrWriter implements AutoCloseable {
         }
     }
 
-    /** Backwards-compatible ctor used by tests written before async offsets. */
     public SolrWriter(SolrClient client, SolrSinkConfig config) {
         this(client, config, new SyncOffsetTracker());
     }
@@ -199,7 +181,6 @@ public final class SolrWriter implements AutoCloseable {
         forEachProcessor(SolrBulkProcessor::flushAsync);
     }
 
-    /** Tell the writer that a partition has been revoked. Closes its dedicated processor. */
     public void partitionRevoked(TopicPartition tp) {
         if (!partitionFanout) {
             return;
@@ -260,7 +241,6 @@ public final class SolrWriter implements AutoCloseable {
         return total;
     }
 
-    /** Volume-weighted average. */
     public double avgBatchLatencyMs() {
         if (!partitionFanout) return sharedProcessor.avgBatchLatencyMs();
         long totalCount = 0;
@@ -287,7 +267,6 @@ public final class SolrWriter implements AutoCloseable {
         return totalCount == 0 ? 0.0 : weightedSum / totalCount;
     }
 
-    /** Latest timestamp across all processors. */
     public long lastSuccessEpochMs() {
         if (!partitionFanout) return sharedProcessor.lastSuccessEpochMs();
         long max = 0L;

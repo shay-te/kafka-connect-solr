@@ -2,6 +2,7 @@ package com.una.kafka.connect.solr;
 
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.impl.CloudHttp2SolrClient;
+import org.apache.solr.client.solrj.impl.ConcurrentUpdateHttp2SolrClient;
 import org.apache.solr.client.solrj.impl.Http2SolrClient;
 import org.apache.solr.client.solrj.impl.LBHttp2SolrClient;
 import org.junit.jupiter.api.Test;
@@ -64,6 +65,27 @@ class SolrClientFactoryTest {
         Map<String, String> p = new HashMap<>();
         try (SolrClient c = SolrClientFactory.create(newConfig(p))) {
             assertThat(c).isInstanceOf(Http2SolrClient.class);
+        }
+    }
+
+    @Test
+    void buildsStreamingClient() throws Exception {
+        Map<String, String> p = new HashMap<>();
+        p.put(SolrSinkConfig.SOLR_URL_CONFIG, "http://solr:8983/solr");
+        p.put(SolrSinkConfig.STREAMING_ENABLED_CONFIG, "true");
+        try (SolrClient c = SolrClientFactory.create(newConfig(p))) {
+            assertThat(c).isInstanceOf(ConcurrentUpdateHttp2SolrClient.class);
+        }
+    }
+
+    @Test
+    void streamingIgnoredOnCloud() throws Exception {
+        // Streaming + ZK should fall back to CloudHttp2SolrClient with a warning.
+        Map<String, String> p = new HashMap<>();
+        p.put(SolrSinkConfig.SOLR_ZK_HOST_CONFIG, "zk1:2181,zk2:2181/solr");
+        p.put(SolrSinkConfig.STREAMING_ENABLED_CONFIG, "true");
+        try (SolrClient c = SolrClientFactory.create(newConfig(p))) {
+            assertThat(c).isInstanceOf(CloudHttp2SolrClient.class);
         }
     }
 }

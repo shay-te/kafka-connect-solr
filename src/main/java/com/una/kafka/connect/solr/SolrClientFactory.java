@@ -1,32 +1,19 @@
 package com.una.kafka.connect.solr;
 
 import org.apache.solr.client.solrj.SolrClient;
+import org.apache.solr.client.solrj.embedded.SSLConfig;
 import org.apache.solr.client.solrj.impl.CloudHttp2SolrClient;
+import org.apache.solr.client.solrj.impl.ConcurrentUpdateHttp2SolrClient;
 import org.apache.solr.client.solrj.impl.Http2SolrClient;
 import org.apache.solr.client.solrj.impl.LBHttp2SolrClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.net.ssl.SSLContext;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
-/**
- * Builds a single, reusable {@link SolrClient}. HTTP/2 multiplexing gives
- * us the concurrent in-flight requests advantage over the ES connector.
- *
- * <p>Configured features (all surfaced as connector config keys, no JVM
- * properties required):</p>
- * <ul>
- *     <li>Basic auth (username / password).</li>
- *     <li>SSL / TLS with keystore + truststore.</li>
- *     <li>HTTP proxy (host / port / basic-auth).</li>
- *     <li>Kerberos (JAAS keytab, auto-renew TGT).</li>
- *     <li>Response compression (Accept-Encoding gzip or zstd).</li>
- * </ul>
- */
 public final class SolrClientFactory {
 
     private static final Logger log = LoggerFactory.getLogger(SolrClientFactory.class);
@@ -38,18 +25,27 @@ public final class SolrClientFactory {
         KerberosConfigurator.install(config);
 
         if (config.isCloud()) {
+            if (config.streamingEnabled()) {
+                log.warn("streaming.enabled=true is ignored in SolrCloud mode; using CloudHttp2SolrClient");
+            }
             return buildCloud(config);
         }
         List<String> urls = config.solrUrls();
         if (urls.size() > 1) {
+            if (config.streamingEnabled()) {
+                log.warn("streaming.enabled=true with multiple solr.url entries is ignored; using LBHttp2SolrClient");
+            }
             return buildLoadBalanced(config, urls);
         }
-        return buildSingle(config, urls.isEmpty() ? "" : urls.get(0));
+        String baseUrl = urls.isEmpty() ? "" : urls.get(0);
+        if (config.streamingEnabled()) {
+            return buildStreaming(config, baseUrl);
+        }
+        return buildSingle(config, baseUrl);
     }
 
     private static SolrClient buildSingle(SolrSinkConfig config, String url) {
-        log.info("Creating Http2SolrClient against {} (ssl={}, proxy={}, kerberos={})",
-                url, config.sslEnabled(), config.proxyEnabled(), config.kerberosEnabled());
+        log.info("Creating Http2SolrClient against {}", url);
         Http2SolrClient.Builder builder = new Http2SolrClient.Builder(url);
         applyCommon(builder, config);
         return builder.build();
@@ -77,36 +73,52 @@ public final class SolrClientFactory {
         return client;
     }
 
+    private static SolrClient buildStreaming(SolrSinkConfig config, String url) {
+        log.info("Creating ConcurrentUpdateHttp2SolrClient against {} (queue={}, threads={})",
+                url, config.streamingQueueSize(), config.streamingThreads());
+        Http2SolrClient.Builder inner = new Http2SolrClient.Builder(url);
+        applyCommon(inner, config);
+        Http2SolrClient http2 = inner.build();
+        return new ConcurrentUpdateHttp2SolrClient.Builder(url, http2)
+                .withQueueSize(config.streamingQueueSize())
+                .withThreadCount(config.streamingThreads())
+                .build();
+    }
+
     private static void applyCommon(Http2SolrClient.Builder builder, SolrSinkConfig config) {
         builder.useHttp1_1(false);
         builder.withConnectionTimeout(config.connectionTimeoutMs(), TimeUnit.MILLISECONDS);
         builder.withIdleTimeout(config.readTimeoutMs(), TimeUnit.MILLISECONDS);
 
-        // Auth
         Optional<String> user = nonEmpty(config.username());
         Optional<String> pw = nonEmpty(config.password());
         if (user.isPresent() && pw.isPresent()) {
             builder.withBasicAuthCredentials(user.get(), pw.get());
         }
 
-        // SSL
         if (config.sslEnabled()) {
+            // SslConfigBuilder.build is invoked to surface keystore/truststore load errors
+            // before we hand the raw paths to SolrJ's SSLConfig.
             try {
-                SSLContext sslContext = SslConfigBuilder.build(config);
-                builder.withSSLContext(sslContext);
+                SslConfigBuilder.build(config);
             } catch (Exception e) {
                 throw new IllegalArgumentException("Failed to build SSL context: " + e.getMessage(), e);
             }
+            SSLConfig sslConfig = new SSLConfig(
+                    true,
+                    false,
+                    config.sslKeystoreLocation(),
+                    config.sslKeystorePassword(),
+                    config.sslTruststoreLocation(),
+                    config.sslTruststorePassword());
+            builder.withSSLConfig(sslConfig);
         }
 
-        // Proxy - we have to wire this via the Jetty client because SolrJ's
-        // builder does not expose proxy directly.
         if (config.proxyEnabled()) {
             ProxyConfigurator.apply(builder, config);
         }
 
-        // Compression
-        if (config.connectionCompression()) {
+        if (config.connectionCompression() || config.compressRequests()) {
             CompressionConfigurator.apply(builder, config);
         }
     }

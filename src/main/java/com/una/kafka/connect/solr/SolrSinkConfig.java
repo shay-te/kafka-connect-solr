@@ -109,6 +109,11 @@ public class SolrSinkConfig extends AbstractConfig {
     public static final String MAPPING_VERSION_CONFIG = "mapping.version";
     public static final String PARTITION_FANOUT_ENABLED_CONFIG = "partition.fanout.enabled";
 
+    // -- Streaming (CUHTTP2) --
+    public static final String STREAMING_ENABLED_CONFIG = "streaming.enabled";
+    public static final String STREAMING_QUEUE_SIZE_CONFIG = "streaming.queue.size";
+    public static final String STREAMING_THREADS_CONFIG = "streaming.threads";
+
     public enum BehaviorOnNullValues {
         IGNORE, DELETE, FAIL;
         public static BehaviorOnNullValues parse(String s) { return valueOf(s.toUpperCase(Locale.ROOT)); }
@@ -394,6 +399,22 @@ public class SolrSinkConfig extends AbstractConfig {
                         + "When `tasks.max == partitions`, the default shared processor is already optimal.",
                 g, ++order, Width.SHORT, "Per-partition fanout");
 
+        g = "Streaming";
+        order = 0;
+        def.define(STREAMING_ENABLED_CONFIG, Type.BOOLEAN, false, Importance.LOW,
+                "When true, wrap the Solr client in ConcurrentUpdateHttp2SolrClient so docs are streamed "
+                        + "to Solr through a persistent HTTP/2 stream instead of one bulk request per batch. "
+                        + "Best for high-RTT (WAN) deployments. Forces sync offset semantics - "
+                        + "`flush.synchronously` is treated as true regardless of its setting. "
+                        + "Standalone Solr only; SolrCloud should continue to use the default CloudHttp2SolrClient.",
+                g, ++order, Width.SHORT, "Streaming");
+        def.define(STREAMING_QUEUE_SIZE_CONFIG, Type.INT, 10_000, Importance.LOW,
+                "Internal queue size of the streaming client. Applies only when `streaming.enabled=true`.",
+                g, ++order, Width.SHORT, "Streaming queue");
+        def.define(STREAMING_THREADS_CONFIG, Type.INT, 4, Importance.LOW,
+                "Worker threads in the streaming client. Applies only when `streaming.enabled=true`.",
+                g, ++order, Width.SHORT, "Streaming threads");
+
         return def;
     }
 
@@ -508,6 +529,9 @@ public class SolrSinkConfig extends AbstractConfig {
     public boolean dryRun() { return getBoolean(DRY_RUN_CONFIG); }
     public String mappingVersion() { return getString(MAPPING_VERSION_CONFIG); }
     public boolean partitionFanoutEnabled() { return getBoolean(PARTITION_FANOUT_ENABLED_CONFIG); }
+    public boolean streamingEnabled() { return getBoolean(STREAMING_ENABLED_CONFIG); }
+    public int streamingQueueSize() { return getInt(STREAMING_QUEUE_SIZE_CONFIG); }
+    public int streamingThreads() { return getInt(STREAMING_THREADS_CONFIG); }
 
     public boolean isCloud() {
         return zkHost() != null && !zkHost().isEmpty();

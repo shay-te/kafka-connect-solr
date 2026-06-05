@@ -160,6 +160,5 @@ public class WKBToLatLon<R extends ConnectRecord<R>> implements Transformation<R
 
     @Override
     public void close() {
-        // no-op
     }
 }

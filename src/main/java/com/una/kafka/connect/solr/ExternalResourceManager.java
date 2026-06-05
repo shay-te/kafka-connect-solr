@@ -5,28 +5,13 @@ import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.request.CollectionAdminRequest;
 import org.apache.solr.client.solrj.request.CoreAdminRequest;
 import org.apache.solr.client.solrj.response.CoreAdminResponse;
-import org.apache.solr.common.util.NamedList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
-/**
- * Probes Solr for the target collection at task start and, depending on
- * {@code external.resource.usage} + {@code schema.auto.create}, either
- * fails fast or auto-creates it. Mirrors ES's ExternalResourceExistenceChecker.
- *
- * <p>Why this is better than ES's checker:</p>
- * <ul>
- *     <li>One probe per unique collection, cached after first success so
- *         per-task startup stays cheap.</li>
- *     <li>Auto-create respects {@code auto.create.shards},
- *         {@code auto.create.replication.factor} and
- *         {@code auto.create.configset} — ES only auto-creates with the
- *         server-default index template.</li>
- * </ul>
- */
 public final class ExternalResourceManager {
 
     private static final Logger log = LoggerFactory.getLogger(ExternalResourceManager.class);
@@ -70,14 +55,9 @@ public final class ExternalResourceManager {
     private boolean probe(String collection) {
         try {
             if (config.isCloud()) {
-                NamedList<Object> resp = client.request(CollectionAdminRequest.listCollections());
-                Object list = resp.get("collections");
-                if (list instanceof java.util.Collection) {
-                    return ((java.util.Collection<?>) list).contains(collection);
-                }
-                return false;
+                List<String> collections = CollectionAdminRequest.listCollections(client);
+                return collections != null && collections.contains(collection);
             }
-            // Standalone Solr: use the Core admin status endpoint.
             CoreAdminResponse status = CoreAdminRequest.getStatus(collection, client);
             return status.getCoreStatus(collection) != null
                     && !status.getCoreStatus(collection).asMap(0).isEmpty();

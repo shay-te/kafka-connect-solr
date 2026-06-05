@@ -6,17 +6,10 @@ import org.apache.kafka.connect.sink.SinkRecord;
 
 import java.util.Map;
 
-/**
- * The conservative tracker. The sync path never reads {@code isAcked()} on
- * the returned {@link OffsetState} (preCommit waits for all in-flight
- * writes to complete via {@code flushSync}), so we hand back a shared
- * sentinel and skip one allocation per record. {@code markAcked()} on the
- * sentinel is a no-op because the field is shared and rapidly toggled by
- * different workers - which is fine, nobody reads it.
- */
+// Sync path never reads isAcked() (flushSync waits for all in-flight writes),
+// so return a shared sentinel and skip the per-record OffsetState allocation.
 public final class SyncOffsetTracker implements OffsetTracker {
 
-    /** Reusable across every record; safe because the sync path never reads .isAcked(). */
     private static final OffsetState SENTINEL = new OffsetState(new TopicPartition("", -1), -1L);
 
     @Override
@@ -32,6 +25,5 @@ public final class SyncOffsetTracker implements OffsetTracker {
 
     @Override
     public void closePartition(TopicPartition partition) {
-        // nothing to drop
     }
 }

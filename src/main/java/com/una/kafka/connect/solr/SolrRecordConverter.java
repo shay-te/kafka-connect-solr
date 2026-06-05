@@ -22,29 +22,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-/**
- * Converts a Kafka Connect record into a SolrInputDocument.
- *
- * <p>Hot-path strategy:</p>
- * <ul>
- *     <li>All config knobs cached in {@code final} fields.</li>
- *     <li>Id-field dot-path pre-split once at construction.</li>
- *     <li>{@code Base64.Encoder} cached statically (thread-safe).</li>
- *     <li><b>Schema-aware encoder plan</b>: for every Struct schema we see,
- *         we build a {@code FieldEncoder[]} once and reuse it for every
- *         record that shares the same schema identity. This skips the
- *         per-field {@code switch (schemaType)} + {@code instanceof}
- *         dispatch on the hot path - the encoder array is just an
- *         indexed virtual call.</li>
- *     <li>{@link IdentityHashMap} keys on schema reference so we don't pay
- *         {@code Schema.equals/hashCode} cost per record. CDC pipelines
- *         reuse Schema instances - this is the common case.</li>
- * </ul>
- */
 public final class SolrRecordConverter {
 
     private static final Base64.Encoder BASE64 = Base64.getEncoder();
-    /** Sentinel encoder array for schemas with no fields (shouldn't really happen). */
     private static final FieldEncoder[] EMPTY_PLAN = new FieldEncoder[0];
 
     private final IdStrategy idStrategy;
@@ -55,7 +35,8 @@ public final class SolrRecordConverter {
     private final String[] idFieldPath;
     private final String mappingVersion;
 
-    /** Identity-keyed cache: schema reference → precomputed per-field encoders. */
+    // Identity-keyed: CDC pipelines reuse Schema instances, so reference equality is enough
+    // and skips Schema.equals/hashCode per record.
     private final Map<Schema, FieldEncoder[]> planCache = new IdentityHashMap<>();
 
     public SolrRecordConverter(SolrSinkConfig config) {
@@ -145,10 +126,7 @@ public final class SolrRecordConverter {
     }
 
     private FieldEncoder[] planFor(Schema schema, String prefix) {
-        // Plans are prefix-sensitive. The common case is prefix="" (top-level
-        // struct) which is what we cache. Nested struct plans are built on
-        // demand and not cached because their addresses depend on the parent's
-        // prefix - cheaper to rebuild than to maintain a 2-level cache key.
+        // Nested plans are prefix-sensitive; only cache the top-level prefix="" case.
         if (!prefix.isEmpty()) {
             return buildPlan(schema, prefix);
         }
@@ -176,7 +154,6 @@ public final class SolrRecordConverter {
 
     private FieldEncoder encoderFor(Field field, String name) {
         Schema sub = field.schema();
-        // Logical types take precedence over the primitive type.
         if (sub.name() != null) {
             switch (sub.name()) {
                 case Timestamp.LOGICAL_NAME:
@@ -234,7 +211,6 @@ public final class SolrRecordConverter {
         }
     }
 
-    /** Used by ARRAY encoders for each element; covers the rare element-is-itself-a-Struct case. */
     void addScalar(SolrInputDocument doc, String name, Object value, Schema schema) {
         if (value == null) {
             return;
@@ -296,10 +272,7 @@ public final class SolrRecordConverter {
     }
 
     private void applyAtomicUpdate(SolrInputDocument doc) {
-        // Snapshot the field names BEFORE mutating - iterating doc.getFieldNames()
-        // while calling doc.setField() on those same names worked only by relying
-        // on LinkedHashMap not bumping modCount for replacement. Snapshotting is
-        // a few bytes more per record and immune to that fragility.
+        // Snapshot before mutating: setField on the names we're iterating triggers ConcurrentModification.
         String[] names = doc.getFieldNames().toArray(new String[0]);
         for (String name : names) {
             if ("id".equals(name)) {
@@ -309,10 +282,6 @@ public final class SolrRecordConverter {
             if (original == null) {
                 continue;
             }
-            // Map.of returns a flyweight Map1 with the entry inlined - one
-            // allocation vs HashMap's three (object + Entry[] + Entry node).
-            // For ATOMIC_UPDATE workloads with N-field docs at K records/sec
-            // this is N*K HashMap allocations eliminated per second.
             doc.setField(name, Map.of("set", original));
         }
     }
@@ -336,11 +305,6 @@ public final class SolrRecordConverter {
         return cur;
     }
 
-    /**
-     * One pre-bound encoder per Struct field. {@code Field}, target field
-     * name and any element schema are captured in the lambda closure at
-     * construction so the hot-path call is just an indexed virtual dispatch.
-     */
     @FunctionalInterface
     interface FieldEncoder {
         void encode(SolrRecordConverter conv, SolrInputDocument doc, Struct src);

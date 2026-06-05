@@ -9,19 +9,6 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.Map;
 
-/**
- * Tracks per-partition pending writes as an in-order deque of
- * {@link OffsetState}s. When preCommit is called we walk the head of each
- * deque popping acked offsets, and commit the highest contiguous offset.
- *
- * <p>Better than the ES connector's {@code AsyncOffsetTracker}:
- * <ul>
- *     <li>Tracks per record (not per batch) so a single slow doc in a
- *         batch doesn't stall the whole batch's offsets.</li>
- *     <li>Drops bookkeeping on closePartition() so rebalances don't leak
- *         memory.</li>
- * </ul></p>
- */
 public final class AsyncOffsetTracker implements OffsetTracker {
 
     private final Map<TopicPartition, Deque<OffsetState>> pending = new HashMap<>();

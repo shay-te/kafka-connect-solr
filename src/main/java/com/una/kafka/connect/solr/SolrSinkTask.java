@@ -30,16 +30,16 @@ public class SolrSinkTask extends SinkTask {
         log.info("Starting SolrSinkTask v{}", version());
         this.config = new SolrSinkConfig(props);
         SolrClient client = createClient(config);
-        this.offsetTracker = config.flushSynchronously() ? new SyncOffsetTracker() : new AsyncOffsetTracker();
+        // CUHTTP2 buffers internally; per-record async offsets aren't meaningful in streaming mode.
+        boolean sync = config.flushSynchronously() || config.streamingEnabled();
+        this.offsetTracker = sync ? new SyncOffsetTracker() : new AsyncOffsetTracker();
         this.writer = createWriter(client, config, offsetTracker);
     }
 
-    /** Test seam. */
     protected SolrClient createClient(SolrSinkConfig config) {
         return SolrClientFactory.create(config);
     }
 
-    /** Test seam. */
     protected SolrWriter createWriter(SolrClient client, SolrSinkConfig config, OffsetTracker tracker) {
         return new SolrWriter(client, config, tracker);
     }
@@ -63,14 +63,11 @@ public class SolrSinkTask extends SinkTask {
     @Override
     public Map<TopicPartition, OffsetAndMetadata> preCommit(
             Map<TopicPartition, OffsetAndMetadata> currentOffsets) {
-        if (config.flushSynchronously()) {
+        if (config.flushSynchronously() || config.streamingEnabled()) {
             writer.flush();
-            logMetrics("sync");
+            logMetrics(config.streamingEnabled() ? "streaming" : "sync");
             return currentOffsets;
         }
-        // Async mode: fire any pending writes but DO NOT block. Return only
-        // the offsets that have actually been acked by Solr so the consumer
-        // can keep up while Solr is digesting older batches.
         writer.flushAsync();
         logMetrics("async");
         return offsetTracker.safeOffsets(currentOffsets);
@@ -90,7 +87,6 @@ public class SolrSinkTask extends SinkTask {
 
     @Override
     public void flush(Map<TopicPartition, OffsetAndMetadata> offsets) {
-        // flush() is the legacy hook; respect the caller and always block here.
         writer.flush();
     }
 

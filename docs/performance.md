@@ -87,28 +87,27 @@ Items below ranked by ROI for a 100k records/sec target. Each lists the
 real implementation cost and the offset-tracking implication, because
 some of them break the per-record OffsetState contract.
 
-### 1. `ConcurrentUpdateHttp2SolrClient` (streaming updates) — ★★★
+### 1. `ConcurrentUpdateHttp2SolrClient` (streaming updates) — ★★★ — IMPLEMENTED
 
-The biggest single layer-3 win available. Instead of "assemble batch →
-send → wait → repeat", SolrJ's CUHTTP2 client streams individual
-documents to the server through a continuously-open HTTP/2 stream.
+Opt-in via `streaming.enabled=true` (plus `streaming.queue.size` and
+`streaming.threads` to tune the internal buffering). The connector
+wraps the base `Http2SolrClient` in CUHTTP2 so docs flow through a
+continuously-open HTTP/2 stream instead of one bulk request per batch.
 The server pipeline-indexes them.
 
-Win: 20–40% extra throughput when RTT > 1 ms (the bigger the RTT,
-the bigger the win, because we never wait for a batch round-trip).
+Win: 20–40% extra throughput when RTT > 1 ms (the bigger the RTT, the
+bigger the win — we never wait for a batch round-trip).
 
-Cost: CUHTTP2 owns the batching, so our `OffsetTracker` can't see
-when an *individual* record was acked. Two options:
+Trade-off taken: CUHTTP2 owns the batching, so per-record async offsets
+aren't meaningful. When `streaming.enabled=true`, the task forces the
+sync offset tracker and `preCommit` blocks on `blockUntilFinished()`
+before returning. This guarantees at-least-once: we only commit offsets
+once Solr has fully acked everything queued.
 
-- Block on `client.blockUntilFinished()` in `preCommit` — degrades to
-  effectively-sync semantics for offsets, but the in-batch streaming
-  win remains.
-- Hook the client's error reporter to update offset state per ack —
-  requires patching SolrJ internals, fragile.
-
-Recommendation: do this if and only if profiling shows the
-"send batch + wait for ack" round-trip is the bottleneck on your link.
-Skip on LANs (sub-ms RTT) where it adds complexity for little gain.
+When to enable: WAN deploys where the per-batch round-trip dominates.
+Standalone Solr only — `solr.zk.host` (SolrCloud) falls back to
+`CloudHttp2SolrClient` with a warning, because CUHTTP2 doesn't know
+how to do ZK-based shard routing.
 
 ### 2. Per-Kafka-partition fanout — ★★ — IMPLEMENTED
 
@@ -246,8 +245,9 @@ that runs it should be **Java 21 LTS** when possible:
   pauses while sustaining > 100k records/sec.
 
 We do not need virtual threads for the bulk path — the executor pool is
-small (`max.in.flight.requests`) and well-tuned. Virtual threads would
-help if/when we move to the CUHTTP2 streaming model.
+small (`max.in.flight.requests`) and well-tuned. Virtual threads could
+help further when `streaming.enabled=true` because CUHTTP2's worker
+threads spend most of their time blocked on HTTP/2 stream responses.
 
 ### GraalVM JDK
 

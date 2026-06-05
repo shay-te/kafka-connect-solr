@@ -8,21 +8,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Connector-level validation. Mirrors and improves on the ES
- * connector's Validator: every error includes a remediation hint.
- *
- * <p>Better than ES:</p>
- * <ul>
- *     <li>Each error message points at exactly which config key to fix
- *         (ES often returns "invalid configuration" without naming the key).</li>
- *     <li>SSL files are verified existing on disk at validate() time, not
- *         silently at first request.</li>
- *     <li>Kerberos keytab is verified existing on disk.</li>
- *     <li>Throughput knobs are sanity-checked against each other
- *         (e.g. max.buffered.records &ge; batch.size).</li>
- * </ul>
- */
 public final class Validator {
 
     private Validator() {

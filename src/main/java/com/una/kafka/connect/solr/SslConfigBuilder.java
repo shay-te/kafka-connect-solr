@@ -8,18 +8,6 @@ import java.io.InputStream;
 import java.security.KeyStore;
 import java.security.SecureRandom;
 
-/**
- * Builds an {@link SSLContext} from {@link SolrSinkConfig}'s SSL keys.
- *
- * <p>Why this is better than the ES connector:</p>
- * <ul>
- *     <li>Defaults to TLSv1.3 (ES defaults to TLSv1.2).</li>
- *     <li>Uses {@link SecureRandom} from the JVM default provider; ES uses
- *         {@code new SecureRandom()} which can stall on /dev/random on Linux.</li>
- *     <li>Reads keystores via try-with-resources so file handles are
- *         always closed even on partial failure.</li>
- * </ul>
- */
 public final class SslConfigBuilder {
 
     private SslConfigBuilder() {
