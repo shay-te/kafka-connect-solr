@@ -13,17 +13,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * Connector + task configuration. Mirrors every key from the Confluent
- * kafka-connect-elasticsearch connector that has a Solr analogue, plus a
- * few Solr-native extras (zk.host, collection naming, atomic updates,
- * SolrCloud auto-create with shards/replicas, zstd compression).
- *
- * <p>Where ES has a config that has no Solr analogue (data streams) the key
- * is intentionally absent. Where Solr does the same job differently
- * (commitWithin instead of refresh_interval) the new key is documented
- * here.</p>
- */
 public class SolrSinkConfig extends AbstractConfig {
 
     // -- Connection --
@@ -186,12 +175,11 @@ public class SolrSinkConfig extends AbstractConfig {
                 g, ++order, Width.SHORT, "Compression");
         def.define(CONNECTION_COMPRESSION_ALGORITHM_CONFIG, Type.STRING, "GZIP", Importance.LOW,
                 "Algorithm advertised when connection.compression=true. GZIP | ZSTD | NONE. "
-                        + "ZSTD requires Solr 9.1+; ES connector only supports GZIP.",
+                        + "ZSTD requires Solr 9.1+.",
                 g, ++order, Width.SHORT, "Compression algorithm");
         def.define(CONNECTION_COMPRESSION_REQUESTS_CONFIG, Type.BOOLEAN, false, Importance.LOW,
                 "Gzip outbound request bodies. Worthwhile on WAN deploys where bandwidth is the limit; "
-                        + "costs CPU on LANs where bandwidth is plentiful. Off by default. "
-                        + "The ES connector has no equivalent.",
+                        + "costs CPU on LANs where bandwidth is plentiful. Off by default.",
                 g, ++order, Width.SHORT, "Request compression");
 
         // -- Proxy --
@@ -238,7 +226,7 @@ public class SolrSinkConfig extends AbstractConfig {
                 "JKS, PKCS12 or BCFKS.",
                 g, ++order, Width.SHORT, "Truststore type");
         def.define(SSL_PROTOCOL_CONFIG, Type.STRING, "TLSv1.3", Importance.LOW,
-                "Default SSL protocol. TLSv1.3 by default (ES connector defaults to TLSv1.2).",
+                "Default SSL protocol.",
                 g, ++order, Width.SHORT, "TLS protocol");
         def.define(SSL_ENABLED_PROTOCOLS_CONFIG, Type.LIST, "TLSv1.3,TLSv1.2", Importance.LOW,
                 "Enabled protocol list.",
@@ -260,8 +248,7 @@ public class SolrSinkConfig extends AbstractConfig {
                 "Path to the keytab.",
                 g, ++order, Width.LONG, "Keytab path");
         def.define(KERBEROS_TICKET_RENEW_WINDOW_FACTOR_CONFIG, Type.DOUBLE, 0.8, Importance.LOW,
-                "Fraction of TGT lifetime to elapse before renew. ES connector has no auto-renew - "
-                        + "we renew automatically.",
+                "Fraction of TGT lifetime to elapse before automatic renew.",
                 g, ++order, Width.SHORT, "TGT renew factor");
 
         // -- Behaviour --
@@ -280,11 +267,11 @@ public class SolrSinkConfig extends AbstractConfig {
                 "Comma-separated topic names where schema.ignore is forced true.",
                 g, ++order, Width.LONG, "Per-topic ignore schema");
         def.define(COMPACT_MAP_ENTRIES_CONFIG, Type.BOOLEAN, true, Importance.LOW,
-                "ES compat. true = dotted-path flatten (Solr-native, faster). "
-                        + "false = ES-style array of {key,value} structs.",
+                "true = flatten map fields with dotted-path keys. "
+                        + "false = emit each entry as a {key,value} struct.",
                 g, ++order, Width.SHORT, "Compact maps");
         def.define(DROP_INVALID_MESSAGE_CONFIG, Type.BOOLEAN, false, Importance.LOW,
-                "Alias for behavior.on.malformed.documents=ignore (matches ES connector).",
+                "Alias for behavior.on.malformed.documents=ignore.",
                 g, ++order, Width.SHORT, "Drop invalid");
         def.define(BEHAVIOR_ON_NULL_VALUES_CONFIG, Type.STRING, "ignore", Importance.LOW,
                 "Tombstones: ignore | delete | fail.",
@@ -315,7 +302,7 @@ public class SolrSinkConfig extends AbstractConfig {
                         + "much higher throughput when Solr is slow.",
                 g, ++order, Width.SHORT, "Flush synchronously");
         def.define(MAX_IN_FLIGHT_REQUESTS_CONFIG, Type.INT, 8, Importance.MEDIUM,
-                "Concurrent Solr requests per task. ES connector default is 5; we default higher because HTTP/2 multiplexes.",
+                "Concurrent Solr requests per task. Default 8 (HTTP/2 multiplexes over one connection).",
                 g, ++order, Width.SHORT, "Max in-flight");
         def.define(MAX_BUFFERED_RECORDS_CONFIG, Type.INT, 20_000, Importance.MEDIUM,
                 "Maximum buffered records across all in-flight batches.",
@@ -331,7 +318,7 @@ public class SolrSinkConfig extends AbstractConfig {
         g = "Write";
         order = 0;
         def.define(WRITE_METHOD_CONFIG, Type.STRING, "INDEX", Importance.MEDIUM,
-                "INDEX | UPSERT | ATOMIC_UPDATE. ES doesn't support ATOMIC_UPDATE.",
+                "INDEX | UPSERT | ATOMIC_UPDATE.",
                 g, ++order, Width.MEDIUM, "Write method");
         def.define(ID_STRATEGY_CONFIG, Type.STRING, "KAFKA_KEY", Importance.MEDIUM,
                 "KAFKA_KEY | RECORD_FIELD | TOPIC_PARTITION_OFFSET | UUID.",
@@ -340,12 +327,12 @@ public class SolrSinkConfig extends AbstractConfig {
                 "Field path used when id.strategy=RECORD_FIELD.",
                 g, ++order, Width.MEDIUM, "Id field");
         def.define(USE_AUTOGENERATED_IDS_CONFIG, Type.BOOLEAN, false, Importance.LOW,
-                "ES compat alias - true == id.strategy=UUID.",
+                "When true, force id.strategy=UUID.",
                 g, ++order, Width.SHORT, "Autogen ids");
         def.define(EXTERNAL_VERSION_HEADER_CONFIG, Type.STRING, "", Importance.LOW,
                 "Name of a Kafka record header carrying the document version. Empty disables external versioning. "
                         + "When set, the value is written as Solr's _version_ field for optimistic concurrency. "
-                        + "Better than ES connector: we accept any header type (string/long/bytes).",
+                        + "Accepts any header type (string/long/bytes).",
                 g, ++order, Width.MEDIUM, "External version header");
         def.define(COLLECTION_NAMING_STRATEGY_CONFIG, Type.STRING, "TOPIC", Importance.LOW,
                 "TOPIC | STATIC | TOPIC_REGEX (pattern=>replacement).",
@@ -371,7 +358,7 @@ public class SolrSinkConfig extends AbstractConfig {
                 g, ++order, Width.SHORT, "Auto evolve");
         def.define(EXTERNAL_RESOURCE_USAGE_CONFIG, Type.STRING, "AUTO", Importance.LOW,
                 "UNUSED (no check) | REQUIRED (fail if missing) | AUTO (create if missing and "
-                        + "schema.auto.create=true, else fail). ES has the same key with the same semantics.",
+                        + "schema.auto.create=true, else fail).",
                 g, ++order, Width.SHORT, "Resource usage");
 
         // -- Commit --

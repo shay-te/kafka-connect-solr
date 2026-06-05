@@ -45,14 +45,14 @@ public final class SolrBulkProcessor implements AutoCloseable {
 
     private volatile long lastSuccessEpochMs = 0L;
 
-    private final Map<String, CollectionBuffer> upsertBuffers = new HashMap<>();
-    private final Map<String, List<PendingDelete>> deleteBuffers = new HashMap<>();
+    private final Map<String, UpsertBuffer> upsertBuffers = new HashMap<>();
+    private final Map<String, DeleteBuffer> deleteBuffers = new HashMap<>();
     private long lastFlushNanos = System.nanoTime();
 
     private String lastUpsertCollection;
-    private CollectionBuffer lastUpsertBuffer;
+    private UpsertBuffer lastUpsertBuffer;
     private String lastDeleteCollection;
-    private List<PendingDelete> lastDeleteBuffer;
+    private DeleteBuffer lastDeleteBuffer;
 
     private final LongAdder recordsWritten = new LongAdder();
     private final LongAdder recordsFailed = new LongAdder();
@@ -91,27 +91,29 @@ public final class SolrBulkProcessor implements AutoCloseable {
     }
 
     public void upsert(String collection, SolrInputDocument doc, OffsetState offsetState) {
-        CollectionBuffer buf = upsertBufferFor(collection);
-        buf.docs.add(new Pending(doc, offsetState));
+        UpsertBuffer buf = upsertBufferFor(collection);
+        buf.docs.add(doc);
+        buf.states.add(offsetState);
         if (bulkSizeBytes > 0) buf.bytes.add(estimateBytes(doc));
         queueDepth.increment();
         maybeFlush(buf);
     }
 
     public void delete(String collection, String id, OffsetState offsetState) {
-        List<PendingDelete> buf = deleteBufferFor(collection);
-        buf.add(new PendingDelete(id, offsetState));
+        DeleteBuffer buf = deleteBufferFor(collection);
+        buf.ids.add(id);
+        buf.states.add(offsetState);
         queueDepth.increment();
         maybeFlushDelete(buf);
     }
 
-    private CollectionBuffer upsertBufferFor(String collection) {
+    private UpsertBuffer upsertBufferFor(String collection) {
         if (collection.equals(lastUpsertCollection)) {
             return lastUpsertBuffer;
         }
-        CollectionBuffer buf = upsertBuffers.get(collection);
+        UpsertBuffer buf = upsertBuffers.get(collection);
         if (buf == null) {
-            buf = new CollectionBuffer(batchSize);
+            buf = new UpsertBuffer(batchSize);
             upsertBuffers.put(collection, buf);
         }
         lastUpsertCollection = collection;
@@ -119,13 +121,13 @@ public final class SolrBulkProcessor implements AutoCloseable {
         return buf;
     }
 
-    private List<PendingDelete> deleteBufferFor(String collection) {
+    private DeleteBuffer deleteBufferFor(String collection) {
         if (collection.equals(lastDeleteCollection)) {
             return lastDeleteBuffer;
         }
-        List<PendingDelete> buf = deleteBuffers.get(collection);
+        DeleteBuffer buf = deleteBuffers.get(collection);
         if (buf == null) {
-            buf = new ArrayList<>(batchSize);
+            buf = new DeleteBuffer(batchSize);
             deleteBuffers.put(collection, buf);
         }
         lastDeleteCollection = collection;
@@ -133,7 +135,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
         return buf;
     }
 
-    private void maybeFlush(CollectionBuffer touched) {
+    private void maybeFlush(UpsertBuffer touched) {
         if (touched.docs.size() >= batchSize
                 || (bulkSizeBytes > 0 && touched.bytes.sum() >= bulkSizeBytes)) {
             flushAsync();
@@ -142,8 +144,8 @@ public final class SolrBulkProcessor implements AutoCloseable {
         checkGlobalThresholds();
     }
 
-    private void maybeFlushDelete(List<PendingDelete> touched) {
-        if (touched.size() >= batchSize) {
+    private void maybeFlushDelete(DeleteBuffer touched) {
+        if (touched.ids.size() >= batchSize) {
             flushAsync();
             return;
         }
@@ -158,24 +160,27 @@ public final class SolrBulkProcessor implements AutoCloseable {
     }
 
     public void flushAsync() {
-        for (Map.Entry<String, CollectionBuffer> e : upsertBuffers.entrySet()) {
-            CollectionBuffer buf = e.getValue();
+        for (Map.Entry<String, UpsertBuffer> e : upsertBuffers.entrySet()) {
+            UpsertBuffer buf = e.getValue();
             if (buf.docs.isEmpty()) continue;
             String collection = e.getKey();
-            List<Pending> snapshot = buf.takeAndReset(batchSize);
-            submit(() -> sendUpsert(collection, snapshot));
+            List<SolrInputDocument> docs = buf.docs;
+            List<OffsetState> states = buf.states;
+            buf.docs = new ArrayList<>(batchSize);
+            buf.states = new ArrayList<>(batchSize);
+            buf.bytes.reset();
+            submit(() -> sendUpsert(collection, docs, states));
         }
-        for (Map.Entry<String, List<PendingDelete>> e : deleteBuffers.entrySet()) {
-            List<PendingDelete> dels = e.getValue();
-            if (dels.isEmpty()) continue;
+        for (Map.Entry<String, DeleteBuffer> e : deleteBuffers.entrySet()) {
+            DeleteBuffer buf = e.getValue();
+            if (buf.ids.isEmpty()) continue;
             String collection = e.getKey();
-            List<PendingDelete> snapshot = dels;
-            e.setValue(new ArrayList<>(batchSize));
-            submit(() -> sendDelete(collection, snapshot));
+            List<String> ids = buf.ids;
+            List<OffsetState> states = buf.states;
+            buf.ids = new ArrayList<>(batchSize);
+            buf.states = new ArrayList<>(batchSize);
+            submit(() -> sendDelete(collection, ids, states));
         }
-        // lastDeleteBuffer would point at the in-flight snapshot after the swap above.
-        lastDeleteCollection = null;
-        lastDeleteBuffer = null;
         lastFlushNanos = System.nanoTime();
     }
 
@@ -214,27 +219,24 @@ public final class SolrBulkProcessor implements AutoCloseable {
         }
     }
 
-    private Void sendUpsert(String collection, List<Pending> docs) {
+    private Void sendUpsert(String collection, List<SolrInputDocument> docs, List<OffsetState> states) {
         long batchStart = System.nanoTime();
         try {
+            int size = docs.size();
             if (dryRun) {
                 log.info("DRY RUN: would upsert {} docs to collection={} (first id={})",
-                        docs.size(), collection,
-                        docs.isEmpty() ? "<empty>" : docs.get(0).doc.getFieldValue("id"));
-                recordsWritten.add(docs.size());
-                queueDepth.add(-docs.size());
-                for (Pending p : docs) {
-                    if (p.offsetState != null) p.offsetState.markAcked();
-                }
+                        size, collection,
+                        size == 0 ? "<empty>" : docs.get(0).getFieldValue("id"));
+                recordsWritten.add(size);
+                queueDepth.add(-size);
+                ackAll(states);
                 lastSuccessEpochMs = System.currentTimeMillis();
                 return null;
             }
             try {
                 return RetryUtil.retry(() -> {
                     UpdateRequest req = new UpdateRequest();
-                    List<SolrInputDocument> rawDocs = new ArrayList<>(docs.size());
-                    for (Pending p : docs) rawDocs.add(p.doc);
-                    req.add(rawDocs);
+                    req.add(docs);
                     if (commitWithinMs > 0) {
                         req.setCommitWithin(commitWithinMs);
                     }
@@ -242,18 +244,16 @@ public final class SolrBulkProcessor implements AutoCloseable {
                     req.process(client, collection);
                     solrCallLatencyNanos.add(System.nanoTime() - callStart);
                     solrCallCount.increment();
-                    recordsWritten.add(docs.size());
-                    queueDepth.add(-docs.size());
-                    for (Pending p : docs) {
-                        if (p.offsetState != null) p.offsetState.markAcked();
-                    }
+                    recordsWritten.add(size);
+                    queueDepth.add(-size);
+                    ackAll(states);
                     lastSuccessEpochMs = System.currentTimeMillis();
                     return null;
                 }, maxRetries, retryBackoffMs,
-                        "Solr upsert(" + collection + ", " + docs.size() + " docs)",
+                        "Solr upsert(" + collection + ", " + size + " docs)",
                         totalRetries);
             } catch (RuntimeException e) {
-                recordsFailed.add(docs.size());
+                recordsFailed.add(size);
                 throw e;
             }
         } finally {
@@ -262,26 +262,22 @@ public final class SolrBulkProcessor implements AutoCloseable {
         }
     }
 
-    private Void sendDelete(String collection, List<PendingDelete> dels) {
+    private Void sendDelete(String collection, List<String> ids, List<OffsetState> states) {
         long batchStart = System.nanoTime();
         try {
+            int size = ids.size();
             if (dryRun) {
                 log.info("DRY RUN: would delete {} ids from collection={} (first id={})",
-                        dels.size(), collection,
-                        dels.isEmpty() ? "<empty>" : dels.get(0).id);
-                recordsWritten.add(dels.size());
-                queueDepth.add(-dels.size());
-                for (PendingDelete p : dels) {
-                    if (p.offsetState != null) p.offsetState.markAcked();
-                }
+                        size, collection, size == 0 ? "<empty>" : ids.get(0));
+                recordsWritten.add(size);
+                queueDepth.add(-size);
+                ackAll(states);
                 lastSuccessEpochMs = System.currentTimeMillis();
                 return null;
             }
             try {
                 return RetryUtil.retry(() -> {
                     UpdateRequest req = new UpdateRequest();
-                    List<String> ids = new ArrayList<>(dels.size());
-                    for (PendingDelete p : dels) ids.add(p.id);
                     req.deleteById(ids);
                     if (commitWithinMs > 0) {
                         req.setCommitWithin(commitWithinMs);
@@ -290,23 +286,28 @@ public final class SolrBulkProcessor implements AutoCloseable {
                     req.process(client, collection);
                     solrCallLatencyNanos.add(System.nanoTime() - callStart);
                     solrCallCount.increment();
-                    recordsWritten.add(dels.size());
-                    queueDepth.add(-dels.size());
-                    for (PendingDelete p : dels) {
-                        if (p.offsetState != null) p.offsetState.markAcked();
-                    }
+                    recordsWritten.add(size);
+                    queueDepth.add(-size);
+                    ackAll(states);
                     lastSuccessEpochMs = System.currentTimeMillis();
                     return null;
                 }, maxRetries, retryBackoffMs,
-                        "Solr delete(" + collection + ", " + dels.size() + " ids)",
+                        "Solr delete(" + collection + ", " + size + " ids)",
                         totalRetries);
             } catch (RuntimeException e) {
-                recordsFailed.add(dels.size());
+                recordsFailed.add(size);
                 throw e;
             }
         } finally {
             batchLatencyNanos.add(System.nanoTime() - batchStart);
             batchCount.increment();
+        }
+    }
+
+    private static void ackAll(List<OffsetState> states) {
+        for (int i = 0, n = states.size(); i < n; i++) {
+            OffsetState s = states.get(i);
+            if (s != null) s.markAcked();
         }
     }
 
@@ -378,37 +379,24 @@ public final class SolrBulkProcessor implements AutoCloseable {
         };
     }
 
-    private static final class CollectionBuffer {
-        private List<Pending> docs;
-        private final LongAdder bytes = new LongAdder();
+    private static final class UpsertBuffer {
+        List<SolrInputDocument> docs;
+        List<OffsetState> states;
+        final LongAdder bytes = new LongAdder();
 
-        CollectionBuffer(int batchSize) {
+        UpsertBuffer(int batchSize) {
             this.docs = new ArrayList<>(batchSize);
-        }
-
-        List<Pending> takeAndReset(int batchSize) {
-            List<Pending> taken = this.docs;
-            this.docs = new ArrayList<>(batchSize);
-            this.bytes.reset();
-            return taken;
+            this.states = new ArrayList<>(batchSize);
         }
     }
 
-    private static final class Pending {
-        final SolrInputDocument doc;
-        final OffsetState offsetState;
-        Pending(SolrInputDocument doc, OffsetState offsetState) {
-            this.doc = doc;
-            this.offsetState = offsetState;
-        }
-    }
+    private static final class DeleteBuffer {
+        List<String> ids;
+        List<OffsetState> states;
 
-    private static final class PendingDelete {
-        final String id;
-        final OffsetState offsetState;
-        PendingDelete(String id, OffsetState offsetState) {
-            this.id = id;
-            this.offsetState = offsetState;
+        DeleteBuffer(int batchSize) {
+            this.ids = new ArrayList<>(batchSize);
+            this.states = new ArrayList<>(batchSize);
         }
     }
 }

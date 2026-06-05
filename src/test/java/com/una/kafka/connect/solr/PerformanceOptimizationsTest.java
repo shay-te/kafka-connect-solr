@@ -170,7 +170,7 @@ class PerformanceOptimizationsTest {
     }
 
     // ---------------------------------------------------------------
-    // 7. Per-collection CollectionBuffer is reused across flushes
+    // 7. Per-collection buffer is reused across flushes
     // ---------------------------------------------------------------
 
     @Test
@@ -183,7 +183,6 @@ class PerformanceOptimizationsTest {
         SolrClient client = mock(SolrClient.class);
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, new SolrSinkConfig(p), null);
 
-        // 200 records / batch 10 = 20 batches reusing the same CollectionBuffer.
         for (int i = 0; i < 200; i++) {
             SolrInputDocument d = new SolrInputDocument();
             d.addField("id", String.valueOf(i));

@@ -12,35 +12,44 @@ import org.slf4j.LoggerFactory;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * Optional schema.auto.evolve: maps Kafka schema types onto Solr managed-schema
- * fields and adds missing ones on first sight.
- */
 public final class SolrSchemaManager {
 
     private static final Logger log = LoggerFactory.getLogger(SolrSchemaManager.class);
 
     private final SolrClient client;
     private final SolrSinkConfig config;
+    private final boolean autoEvolve;
     private final Map<String, Set<String>> knownFieldsPerCollection = new HashMap<>();
+    private final Map<String, Set<Schema>> evolvedSchemasPerCollection = new HashMap<>();
 
     public SolrSchemaManager(SolrClient client, SolrSinkConfig config) {
         this.client = client;
         this.config = config;
+        this.autoEvolve = config.schemaAutoEvolve();
     }
 
     public void evolveIfNeeded(String collection, Schema schema) {
-        if (!config.schemaAutoEvolve() || schema == null) {
+        if (!autoEvolve || schema == null) {
+            return;
+        }
+        Set<Schema> seen = evolvedSchemasPerCollection.get(collection);
+        if (seen != null && seen.contains(schema)) {
             return;
         }
         try {
             Set<String> known = knownFieldsPerCollection.computeIfAbsent(collection,
                     k -> loadKnown(collection));
             collectAndAdd(schema, "", collection, known);
+            if (seen == null) {
+                seen = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+                evolvedSchemasPerCollection.put(collection, seen);
+            }
+            seen.add(schema);
         } catch (Exception e) {
             log.warn("Schema auto-evolve failed for collection {}: {}", collection, e.getMessage());
         }

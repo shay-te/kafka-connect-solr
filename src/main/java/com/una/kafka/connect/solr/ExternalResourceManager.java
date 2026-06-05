@@ -8,9 +8,9 @@ import org.apache.solr.client.solrj.response.CoreAdminResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class ExternalResourceManager {
 
@@ -18,15 +18,22 @@ public final class ExternalResourceManager {
 
     private final SolrClient client;
     private final SolrSinkConfig config;
-    private final Set<String> known = new HashSet<>();
+    private final Set<String> known = ConcurrentHashMap.newKeySet();
 
     public ExternalResourceManager(SolrClient client, SolrSinkConfig config) {
         this.client = client;
         this.config = config;
     }
 
-    public synchronized void ensure(String collection) {
+    public void ensure(String collection) {
         if (collection == null || collection.isEmpty() || known.contains(collection)) {
+            return;
+        }
+        ensureSlow(collection);
+    }
+
+    private synchronized void ensureSlow(String collection) {
+        if (known.contains(collection)) {
             return;
         }
         SolrSinkConfig.ExternalResourceUsage usage = config.externalResourceUsage();
@@ -34,8 +41,7 @@ public final class ExternalResourceManager {
             known.add(collection);
             return;
         }
-        boolean exists = probe(collection);
-        if (exists) {
+        if (probe(collection)) {
             known.add(collection);
             return;
         }
@@ -43,7 +49,6 @@ public final class ExternalResourceManager {
             throw new ConnectException("Solr collection '" + collection + "' does not exist and "
                     + SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG + "=REQUIRED");
         }
-        // AUTO
         if (!config.schemaAutoCreate()) {
             throw new ConnectException("Solr collection '" + collection + "' does not exist; "
                     + "set " + SolrSinkConfig.SCHEMA_AUTO_CREATE_CONFIG + "=true to auto-create.");
@@ -91,8 +96,7 @@ public final class ExternalResourceManager {
         }
     }
 
-    /** Test seam. */
-    public synchronized boolean isKnown(String collection) {
+    public boolean isKnown(String collection) {
         return known.contains(collection);
     }
 }

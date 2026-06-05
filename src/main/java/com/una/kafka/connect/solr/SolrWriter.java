@@ -41,6 +41,10 @@ public final class SolrWriter implements AutoCloseable {
     private final SolrBulkProcessor sharedProcessor;
     private final ConcurrentMap<TopicPartition, SolrBulkProcessor> perPartition;
 
+    private String lastTopic;
+    private int lastPartition = -1;
+    private SolrBulkProcessor lastProcessor;
+
     public SolrWriter(SolrClient client, SolrSinkConfig config, OffsetTracker offsetTracker) {
         this.client = client;
         this.config = config;
@@ -76,13 +80,21 @@ public final class SolrWriter implements AutoCloseable {
         if (!partitionFanout) {
             return sharedProcessor;
         }
-        TopicPartition tp = new TopicPartition(record.topic(), record.kafkaPartition());
-        SolrBulkProcessor existing = perPartition.get(tp);
-        if (existing != null) {
-            return existing;
+        int partition = record.kafkaPartition();
+        String topic = record.topic();
+        if (partition == lastPartition && topic.equals(lastTopic) && lastProcessor != null) {
+            return lastProcessor;
         }
-        return perPartition.computeIfAbsent(tp,
-                k -> new SolrBulkProcessor(client, config, schemaManager));
+        TopicPartition tp = new TopicPartition(topic, partition);
+        SolrBulkProcessor proc = perPartition.get(tp);
+        if (proc == null) {
+            proc = perPartition.computeIfAbsent(tp,
+                    k -> new SolrBulkProcessor(client, config, schemaManager));
+        }
+        lastTopic = topic;
+        lastPartition = partition;
+        lastProcessor = proc;
+        return proc;
     }
 
     public void write(SinkRecord record) {
@@ -188,6 +200,11 @@ public final class SolrWriter implements AutoCloseable {
         SolrBulkProcessor proc = perPartition.remove(tp);
         if (proc != null) {
             proc.close();
+        }
+        if (proc == lastProcessor) {
+            lastProcessor = null;
+            lastTopic = null;
+            lastPartition = -1;
         }
     }
 
