@@ -13,13 +13,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class SyncOffsetTrackerTest {
 
+    private SinkRecord r(int partition, long offset) {
+        return new SinkRecord("topic", partition, Schema.STRING_SCHEMA, "k", null, "v", offset);
+    }
+
     @Test
-    void trackReturnsAState() {
+    void trackReturnsAReusableSentinel() {
+        // Sync mode skips per-record OffsetState allocation. The bulk
+        // worker calls markAcked() on the returned state but no one reads
+        // it - flushSync waits for the actual Future to complete.
         SyncOffsetTracker t = new SyncOffsetTracker();
-        OffsetState s = t.track(new SinkRecord("topic", 1, Schema.STRING_SCHEMA, "k", null, "v", 9L));
-        assertThat(s.partition()).isEqualTo(new TopicPartition("topic", 1));
-        assertThat(s.offset()).isEqualTo(9L);
-        assertThat(s.isAcked()).isFalse();
+        OffsetState a = t.track(r(0, 1));
+        OffsetState b = t.track(r(1, 99));
+        assertThat(a).isNotNull();
+        assertThat(a).isSameAs(b);
     }
 
     @Test

@@ -2,18 +2,19 @@ package com.una.kafka.connect.solr;
 
 import org.apache.kafka.common.TopicPartition;
 
-import java.util.concurrent.atomic.AtomicBoolean;
-
 /**
- * One pending record's write state. Lets the async offset tracker advance
- * a partition's committed offset only as far as the contiguous prefix of
- * records that have actually been acked by Solr.
+ * One pending record's write state. {@code volatile} on the ack flag is
+ * sufficient because there is exactly one writer (the bulk worker that
+ * processes the record's batch) and only the preCommit thread reads it.
+ * Saves the AtomicBoolean wrapper object per record - measurable at
+ * high record rates because this allocation happens on every successful
+ * write in async mode.
  */
-public class OffsetState {
+public final class OffsetState {
 
     private final TopicPartition partition;
     private final long offset;
-    private final AtomicBoolean acked = new AtomicBoolean(false);
+    private volatile boolean acked;
 
     public OffsetState(TopicPartition partition, long offset) {
         this.partition = partition;
@@ -29,15 +30,15 @@ public class OffsetState {
     }
 
     public boolean isAcked() {
-        return acked.get();
+        return acked;
     }
 
     public void markAcked() {
-        acked.set(true);
+        acked = true;
     }
 
     @Override
     public String toString() {
-        return partition + "@" + offset + (acked.get() ? "*" : "");
+        return partition + "@" + offset + (acked ? "*" : "");
     }
 }

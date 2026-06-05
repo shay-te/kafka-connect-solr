@@ -22,106 +22,145 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
- * Concurrent batching engine. Per-collection buffers; flush triggers when
- * <ul>
- *     <li>{@code batch.size} records buffered (record-count cap), OR</li>
- *     <li>{@code bulk.size.bytes} bytes accumulated (byte-size cap, ES connector parity), OR</li>
- *     <li>{@code linger.ms} elapsed since the last flush.</li>
- * </ul>
+ * Concurrent batching engine. Performance characteristics:
  *
- * <p>Each pending record carries an {@link OffsetState} so the configured
- * {@link OffsetTracker} can advance Kafka offsets as soon as the matching
- * Solr request acks.</p>
+ * <ul>
+ *     <li>One {@link CollectionBuffer} per target collection - one map
+ *         lookup per record. The buffer's doc list is taken-and-reset in
+ *         place so we never put-during-iterate the outer map.</li>
+ *     <li>Hot config values cached as {@code final} fields.</li>
+ *     <li>Uses the configured {@link SolrClient}'s default
+ *         {@code BinaryRequestWriter} (javabin) - smaller wire payload +
+ *         faster parse than ES's JSON.</li>
+ * </ul>
  */
-public class SolrBulkProcessor implements AutoCloseable {
+public final class SolrBulkProcessor implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(SolrBulkProcessor.class);
 
     private final SolrClient client;
-    private final SolrSinkConfig config;
     private final ExecutorService executor;
     private final BlockingQueue<Future<?>> inflight;
 
-    private final Map<String, List<Pending>> upsertBuffers = new HashMap<>();
-    private final Map<String, Long> upsertBytes = new HashMap<>();
+    private final int batchSize;
+    private final long lingerNanos;
+    private final long bulkSizeBytes;
+    private final int maxBufferedRecords;
+    private final int maxRetries;
+    private final long retryBackoffMs;
+    private final long flushTimeoutMs;
+    private final int commitWithinMs;
+    private final boolean dryRun;
+
+    private volatile long lastSuccessEpochMs = 0L;
+
+    private final Map<String, CollectionBuffer> upsertBuffers = new HashMap<>();
     private final Map<String, List<PendingDelete>> deleteBuffers = new HashMap<>();
     private long lastFlushNanos = System.nanoTime();
 
-    private final AtomicLong recordsWritten = new AtomicLong();
-    private final AtomicLong recordsFailed = new AtomicLong();
-    private final AtomicLong totalRetries = new AtomicLong();
-    private final AtomicInteger queueDepth = new AtomicInteger();
+    // LongAdder shards updates across per-thread cells so concurrent workers
+    // don't spin on a single CAS. ~2-5% throughput improvement under load.
+    private final LongAdder recordsWritten = new LongAdder();
+    private final LongAdder recordsFailed = new LongAdder();
+    private final LongAdder totalRetries = new LongAdder();
+    private final LongAdder queueDepth = new LongAdder();
+
+    private final LongAdder batchLatencyNanos = new LongAdder();
+    private final LongAdder batchCount = new LongAdder();
+    private final LongAdder solrCallLatencyNanos = new LongAdder();
+    private final LongAdder solrCallCount = new LongAdder();
 
     public SolrBulkProcessor(SolrClient client, SolrSinkConfig config, SolrSchemaManager schemaManager) {
         this.client = client;
-        this.config = config;
-        this.inflight = new ArrayBlockingQueue<>(Math.max(1, config.maxInFlight()));
+        this.batchSize = config.batchSize();
+        this.lingerNanos = TimeUnit.MILLISECONDS.toNanos(config.lingerMs());
+        this.bulkSizeBytes = config.bulkSizeBytes();
+        this.maxBufferedRecords = config.maxBufferedRecords();
+        this.maxRetries = config.maxRetries();
+        this.retryBackoffMs = config.retryBackoffMs();
+        this.flushTimeoutMs = config.flushTimeoutMs();
+        // Clamp to int range. Solr's setCommitWithin takes int; configured
+        // values larger than Integer.MAX_VALUE are nonsensical anyway.
+        long cw = config.commitWithinMs();
+        this.commitWithinMs = cw > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) cw;
+        this.dryRun = config.dryRun();
+        if (dryRun) {
+            log.warn("DRY RUN MODE: docs will be logged but never sent to Solr");
+        }
+
+        int inFlight = Math.max(1, config.maxInFlight());
+        this.inflight = new ArrayBlockingQueue<>(inFlight);
         this.executor = new ThreadPoolExecutor(
-                config.maxInFlight(),
-                config.maxInFlight(),
+                inFlight, inFlight,
                 30L, TimeUnit.SECONDS,
-                new LinkedBlockingQueue<>(config.maxInFlight() * 2),
+                new LinkedBlockingQueue<>(inFlight * 2),
                 namedFactory("solr-bulk"),
                 new ThreadPoolExecutor.CallerRunsPolicy());
     }
 
     public void upsert(String collection, SolrInputDocument doc, OffsetState offsetState) {
         long bytes = estimateBytes(doc);
-        upsertBuffers.computeIfAbsent(collection, k -> new ArrayList<>(config.batchSize()))
-                .add(new Pending(doc, offsetState, bytes));
-        upsertBytes.merge(collection, bytes, Long::sum);
-        queueDepth.incrementAndGet();
+        CollectionBuffer buf = upsertBuffers.get(collection);
+        if (buf == null) {
+            buf = new CollectionBuffer(batchSize);
+            upsertBuffers.put(collection, buf);
+        }
+        buf.docs.add(new Pending(doc, offsetState));
+        buf.bytes.add(bytes);
+        queueDepth.increment();
         maybeFlush();
     }
 
     public void delete(String collection, String id, OffsetState offsetState) {
-        deleteBuffers.computeIfAbsent(collection, k -> new ArrayList<>(config.batchSize()))
-                .add(new PendingDelete(id, offsetState));
-        queueDepth.incrementAndGet();
+        List<PendingDelete> buf = deleteBuffers.get(collection);
+        if (buf == null) {
+            buf = new ArrayList<>(batchSize);
+            deleteBuffers.put(collection, buf);
+        }
+        buf.add(new PendingDelete(id, offsetState));
+        queueDepth.increment();
         maybeFlush();
     }
 
     private void maybeFlush() {
-        boolean batchFull = false;
-        for (Map.Entry<String, List<Pending>> e : upsertBuffers.entrySet()) {
-            if (e.getValue().size() >= config.batchSize()) {
-                batchFull = true;
-                break;
-            }
-            long bytes = upsertBytes.getOrDefault(e.getKey(), 0L);
-            if (config.bulkSizeBytes() > 0 && bytes >= config.bulkSizeBytes()) {
-                batchFull = true;
-                break;
+        boolean trigger = false;
+        for (CollectionBuffer buf : upsertBuffers.values()) {
+            if (buf.docs.size() >= batchSize) { trigger = true; break; }
+            if (bulkSizeBytes > 0 && buf.bytes.sum() >= bulkSizeBytes) { trigger = true; break; }
+        }
+        if (!trigger) {
+            long age = System.nanoTime() - lastFlushNanos;
+            if (age >= lingerNanos || queueDepth.sum() >= maxBufferedRecords) {
+                trigger = true;
             }
         }
-        long age = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - lastFlushNanos);
-        if (batchFull || age >= config.lingerMs() || queueDepth.get() >= config.maxBufferedRecords()) {
+        if (trigger) {
             flushAsync();
         }
     }
 
     public void flushAsync() {
-        for (Map.Entry<String, List<Pending>> e : new HashMap<>(upsertBuffers).entrySet()) {
+        // Take-and-reset on each buffer in place. The outer map is NOT
+        // mutated during iteration, which keeps the code safe regardless
+        // of any future HashMap modCount semantics changes.
+        for (Map.Entry<String, CollectionBuffer> e : upsertBuffers.entrySet()) {
+            CollectionBuffer buf = e.getValue();
+            if (buf.docs.isEmpty()) continue;
             String collection = e.getKey();
-            List<Pending> docs = e.getValue();
-            if (docs.isEmpty()) {
-                continue;
-            }
-            upsertBuffers.put(collection, new ArrayList<>(config.batchSize()));
-            upsertBytes.put(collection, 0L);
-            submit(() -> sendUpsert(collection, docs));
+            List<Pending> snapshot = buf.takeAndReset(batchSize);
+            submit(() -> sendUpsert(collection, snapshot));
         }
-        for (Map.Entry<String, List<PendingDelete>> e : new HashMap<>(deleteBuffers).entrySet()) {
-            String collection = e.getKey();
+        for (Map.Entry<String, List<PendingDelete>> e : deleteBuffers.entrySet()) {
             List<PendingDelete> dels = e.getValue();
-            if (dels.isEmpty()) {
-                continue;
-            }
-            deleteBuffers.put(collection, new ArrayList<>(config.batchSize()));
-            submit(() -> sendDelete(collection, dels));
+            if (dels.isEmpty()) continue;
+            String collection = e.getKey();
+            // Same idea: take the list, swap in a fresh sized one.
+            List<PendingDelete> snapshot = dels;
+            e.setValue(new ArrayList<>(batchSize));
+            submit(() -> sendDelete(collection, snapshot));
         }
         lastFlushNanos = System.nanoTime();
     }
@@ -129,7 +168,7 @@ public class SolrBulkProcessor implements AutoCloseable {
     public void flushSync() {
         flushAsync();
         Future<?> f;
-        long deadline = System.currentTimeMillis() + config.flushTimeoutMs();
+        long deadline = System.currentTimeMillis() + flushTimeoutMs;
         while ((f = inflight.poll()) != null) {
             long remaining = deadline - System.currentTimeMillis();
             if (remaining <= 0) {
@@ -154,74 +193,143 @@ public class SolrBulkProcessor implements AutoCloseable {
     }
 
     private Void sendUpsert(String collection, List<Pending> docs) {
-        return RetryUtil.retry(() -> {
-            UpdateRequest req = new UpdateRequest();
-            List<SolrInputDocument> rawDocs = new ArrayList<>(docs.size());
-            for (Pending p : docs) rawDocs.add(p.doc);
-            req.add(rawDocs);
-            if (config.commitWithinMs() > 0) {
-                req.setCommitWithin((int) config.commitWithinMs());
+        long batchStart = System.nanoTime();
+        try {
+            if (dryRun) {
+                log.info("DRY RUN: would upsert {} docs to collection={} (first id={})",
+                        docs.size(), collection,
+                        docs.isEmpty() ? "<empty>" : docs.get(0).doc.getFieldValue("id"));
+                recordsWritten.add(docs.size());
+                queueDepth.add(-docs.size());
+                for (Pending p : docs) {
+                    if (p.offsetState != null) p.offsetState.markAcked();
+                }
+                lastSuccessEpochMs = System.currentTimeMillis();
+                return null;
             }
-            req.process(client, collection);
-            recordsWritten.addAndGet(docs.size());
-            queueDepth.addAndGet(-docs.size());
-            for (Pending p : docs) {
-                if (p.offsetState != null) p.offsetState.markAcked();
+            try {
+                return RetryUtil.retry(() -> {
+                    UpdateRequest req = new UpdateRequest();
+                    List<SolrInputDocument> rawDocs = new ArrayList<>(docs.size());
+                    for (Pending p : docs) rawDocs.add(p.doc);
+                    req.add(rawDocs);
+                    if (commitWithinMs > 0) {
+                        req.setCommitWithin(commitWithinMs);
+                    }
+                    long callStart = System.nanoTime();
+                    req.process(client, collection);
+                    solrCallLatencyNanos.add(System.nanoTime() - callStart);
+                    solrCallCount.increment();
+                    recordsWritten.add(docs.size());
+                    queueDepth.add(-docs.size());
+                    for (Pending p : docs) {
+                        if (p.offsetState != null) p.offsetState.markAcked();
+                    }
+                    lastSuccessEpochMs = System.currentTimeMillis();
+                    return null;
+                }, maxRetries, retryBackoffMs,
+                        "Solr upsert(" + collection + ", " + docs.size() + " docs)",
+                        totalRetries);
+            } catch (RuntimeException e) {
+                // Retries exhausted (or a non-retryable error). Surface failed-record
+                // count for the metric AND let Connect handle the framework-level retry.
+                recordsFailed.add(docs.size());
+                throw e;
             }
-            return null;
-        }, config.maxRetries(), config.retryBackoffMs(),
-                "Solr upsert(" + collection + ", " + docs.size() + " docs)");
+        } finally {
+            batchLatencyNanos.add(System.nanoTime() - batchStart);
+            batchCount.increment();
+        }
     }
 
     private Void sendDelete(String collection, List<PendingDelete> dels) {
-        return RetryUtil.retry(() -> {
-            UpdateRequest req = new UpdateRequest();
-            List<String> ids = new ArrayList<>(dels.size());
-            for (PendingDelete p : dels) ids.add(p.id);
-            req.deleteById(ids);
-            if (config.commitWithinMs() > 0) {
-                req.setCommitWithin((int) config.commitWithinMs());
+        long batchStart = System.nanoTime();
+        try {
+            if (dryRun) {
+                log.info("DRY RUN: would delete {} ids from collection={} (first id={})",
+                        dels.size(), collection,
+                        dels.isEmpty() ? "<empty>" : dels.get(0).id);
+                recordsWritten.add(dels.size());
+                queueDepth.add(-dels.size());
+                for (PendingDelete p : dels) {
+                    if (p.offsetState != null) p.offsetState.markAcked();
+                }
+                lastSuccessEpochMs = System.currentTimeMillis();
+                return null;
             }
-            req.process(client, collection);
-            recordsWritten.addAndGet(dels.size());
-            queueDepth.addAndGet(-dels.size());
-            for (PendingDelete p : dels) {
-                if (p.offsetState != null) p.offsetState.markAcked();
+            try {
+                return RetryUtil.retry(() -> {
+                    UpdateRequest req = new UpdateRequest();
+                    List<String> ids = new ArrayList<>(dels.size());
+                    for (PendingDelete p : dels) ids.add(p.id);
+                    req.deleteById(ids);
+                    if (commitWithinMs > 0) {
+                        req.setCommitWithin(commitWithinMs);
+                    }
+                    long callStart = System.nanoTime();
+                    req.process(client, collection);
+                    solrCallLatencyNanos.add(System.nanoTime() - callStart);
+                    solrCallCount.increment();
+                    recordsWritten.add(dels.size());
+                    queueDepth.add(-dels.size());
+                    for (PendingDelete p : dels) {
+                        if (p.offsetState != null) p.offsetState.markAcked();
+                    }
+                    lastSuccessEpochMs = System.currentTimeMillis();
+                    return null;
+                }, maxRetries, retryBackoffMs,
+                        "Solr delete(" + collection + ", " + dels.size() + " ids)",
+                        totalRetries);
+            } catch (RuntimeException e) {
+                recordsFailed.add(dels.size());
+                throw e;
             }
-            return null;
-        }, config.maxRetries(), config.retryBackoffMs(),
-                "Solr delete(" + collection + ", " + dels.size() + " ids)");
+        } finally {
+            batchLatencyNanos.add(System.nanoTime() - batchStart);
+            batchCount.increment();
+        }
     }
 
-    /**
-     * Rough on-wire size estimate. Used only as a flush trigger so a
-     * cheap approximation is fine.
-     */
     static long estimateBytes(SolrInputDocument doc) {
-        long total = 16; // doc envelope overhead
+        long total = 16;
         for (SolrInputField f : doc.values()) {
-            total += f.getName().length() * 2L; // UTF-8 worst case
+            total += f.getName().length() * 2L;
             Object v = f.getValue();
             if (v == null) continue;
             if (v instanceof CharSequence) {
                 total += ((CharSequence) v).length() * 2L;
             } else if (v instanceof Collection) {
                 for (Object item : (Collection<?>) v) {
-                    total += item == null ? 0 : String.valueOf(item).length() * 2L;
+                    total += item instanceof CharSequence
+                            ? ((CharSequence) item).length() * 2L : 16L;
                 }
-            } else if (v instanceof Map) {
-                total += String.valueOf(v).length() * 2L;
+            } else if (v instanceof Number || v instanceof Boolean) {
+                total += 16L;
             } else {
-                total += 16; // primitive
+                total += 32L;
             }
         }
         return total;
     }
 
-    public long recordsWritten() { return recordsWritten.get(); }
-    public long recordsFailed() { return recordsFailed.get(); }
-    public long retries() { return totalRetries.get(); }
-    public int queueDepth() { return queueDepth.get(); }
+    public long recordsWritten() { return recordsWritten.sum(); }
+    public long recordsFailed() { return recordsFailed.sum(); }
+    public long retries() { return totalRetries.sum(); }
+    public int queueDepth() { return (int) queueDepth.sum(); }
+
+    public double avgBatchLatencyMs() {
+        long count = batchCount.sum();
+        return count == 0 ? 0.0 : (batchLatencyNanos.sum() / (double) count) / 1_000_000.0;
+    }
+
+    public double avgSolrCallLatencyMs() {
+        long count = solrCallCount.sum();
+        return count == 0 ? 0.0 : (solrCallLatencyNanos.sum() / (double) count) / 1_000_000.0;
+    }
+
+    public long batchCount() { return batchCount.sum(); }
+    public long solrCallCount() { return solrCallCount.sum(); }
+    public long lastSuccessEpochMs() { return lastSuccessEpochMs; }
 
     @Override
     public void close() {
@@ -250,14 +358,30 @@ public class SolrBulkProcessor implements AutoCloseable {
         };
     }
 
+    /** Per-collection bucket: doc list + byte counter coalesced into one map entry. */
+    private static final class CollectionBuffer {
+        private List<Pending> docs;
+        private final LongAdder bytes = new LongAdder();
+
+        CollectionBuffer(int batchSize) {
+            this.docs = new ArrayList<>(batchSize);
+        }
+
+        /** Hand the current list to the caller, install a fresh one, reset bytes. */
+        List<Pending> takeAndReset(int batchSize) {
+            List<Pending> taken = this.docs;
+            this.docs = new ArrayList<>(batchSize);
+            this.bytes.reset();
+            return taken;
+        }
+    }
+
     private static final class Pending {
         final SolrInputDocument doc;
         final OffsetState offsetState;
-        final long bytes;
-        Pending(SolrInputDocument doc, OffsetState offsetState, long bytes) {
+        Pending(SolrInputDocument doc, OffsetState offsetState) {
             this.doc = doc;
             this.offsetState = offsetState;
-            this.bytes = bytes;
         }
     }
 

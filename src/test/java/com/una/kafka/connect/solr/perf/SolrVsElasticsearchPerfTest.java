@@ -92,6 +92,17 @@ class SolrVsElasticsearchPerfTest {
             records.add(new SinkRecord("perf", 0, Schema.STRING_SCHEMA, "u-" + i, schema, s, i));
         }
 
+        // Build a small warmup batch so neither side eats JIT cold-start on
+        // the timed run. Use a different topic + small N so it doesn't
+        // overlap the real measurement.
+        List<SinkRecord> warmup = new ArrayList<>(2_000);
+        for (int i = 0; i < 2_000; i++) {
+            warmup.add(new SinkRecord("warmup", 0, Schema.STRING_SCHEMA, "w-" + i,
+                    schema, sample(schema, i), i));
+        }
+        timeSolr(warmup);
+        timeElasticsearch(warmup);
+
         // -- Solr side: drive through SolrSinkTask (real connector code).
         long solrMs = timeSolr(records);
 

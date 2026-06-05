@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.SocketTimeoutException;
+import java.util.concurrent.atomic.LongAdder;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -55,6 +56,28 @@ class RetryUtilTest {
         assertThatThrownBy(() -> RetryUtil.retry(() -> {
             throw new Exception("checked");
         }, 0, 1L, "test")).isInstanceOf(ConnectException.class);
+    }
+
+    @Test
+    void longAdderOverloadCountsRetries() {
+        LongAdder retries = new LongAdder();
+        final int[] attempts = {0};
+        RetryUtil.retry(() -> {
+            attempts[0]++;
+            if (attempts[0] < 3) {
+                throw new IOException("boom");
+            }
+            return 42;
+        }, 5, 1L, "test", retries);
+        // Two retries happened (attempts 2 and 3 succeeded after 1 and 2 failures).
+        assertThat(retries.sum()).isEqualTo(2L);
+    }
+
+    @Test
+    void longAdderOverloadIsNullSafe() {
+        // Passing a null counter must work exactly like the 4-arg overload.
+        Integer result = RetryUtil.retry(() -> 1, 0, 1L, "test", null);
+        assertThat(result).isEqualTo(1);
     }
 
     @Test

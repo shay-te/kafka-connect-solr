@@ -27,7 +27,7 @@ import java.util.Set;
  *         server-default index template.</li>
  * </ul>
  */
-public class ExternalResourceManager {
+public final class ExternalResourceManager {
 
     private static final Logger log = LoggerFactory.getLogger(ExternalResourceManager.class);
 

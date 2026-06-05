@@ -36,6 +36,7 @@ public class SolrSinkConfig extends AbstractConfig {
     public static final String READ_TIMEOUT_MS_CONFIG = "read.timeout.ms";
     public static final String CONNECTION_COMPRESSION_CONFIG = "connection.compression";
     public static final String CONNECTION_COMPRESSION_ALGORITHM_CONFIG = "connection.compression.algorithm";
+    public static final String CONNECTION_COMPRESSION_REQUESTS_CONFIG = "connection.compression.requests";
     public static final String MAX_CONNECTION_IDLE_TIME_MS_CONFIG = "max.connection.idle.time.ms";
 
     // -- Proxy --
@@ -102,6 +103,11 @@ public class SolrSinkConfig extends AbstractConfig {
 
     // -- Commit --
     public static final String COMMIT_WITHIN_MS_CONFIG = "commit.within.ms";
+
+    // -- Ops --
+    public static final String DRY_RUN_CONFIG = "dry.run";
+    public static final String MAPPING_VERSION_CONFIG = "mapping.version";
+    public static final String PARTITION_FANOUT_ENABLED_CONFIG = "partition.fanout.enabled";
 
     public enum BehaviorOnNullValues {
         IGNORE, DELETE, FAIL;
@@ -177,6 +183,11 @@ public class SolrSinkConfig extends AbstractConfig {
                 "Algorithm advertised when connection.compression=true. GZIP | ZSTD | NONE. "
                         + "ZSTD requires Solr 9.1+; ES connector only supports GZIP.",
                 g, ++order, Width.SHORT, "Compression algorithm");
+        def.define(CONNECTION_COMPRESSION_REQUESTS_CONFIG, Type.BOOLEAN, false, Importance.LOW,
+                "Gzip outbound request bodies. Worthwhile on WAN deploys where bandwidth is the limit; "
+                        + "costs CPU on LANs where bandwidth is plentiful. Off by default. "
+                        + "The ES connector has no equivalent.",
+                g, ++order, Width.SHORT, "Request compression");
 
         // -- Proxy --
         g = "Proxy";
@@ -365,6 +376,24 @@ public class SolrSinkConfig extends AbstractConfig {
                 "Solr commitWithin sent with every batch.",
                 g, ++order, Width.SHORT, "commitWithin");
 
+        g = "Ops";
+        order = 0;
+        def.define(DRY_RUN_CONFIG, Type.BOOLEAN, false, Importance.LOW,
+                "When true, the connector converts records and logs the documents it would write "
+                        + "but never actually contacts Solr. Useful for debugging Debezium mappings "
+                        + "before pointing at a live cluster.",
+                g, ++order, Width.SHORT, "Dry run");
+        def.define(MAPPING_VERSION_CONFIG, Type.STRING, "", Importance.LOW,
+                "When set, every Solr document gets a `_mapping_version` field with this value. "
+                        + "Lets you query Solr later for docs indexed under an old mapping and reindex them.",
+                g, ++order, Width.MEDIUM, "Mapping version");
+        def.define(PARTITION_FANOUT_ENABLED_CONFIG, Type.BOOLEAN, false, Importance.LOW,
+                "When true, each assigned Kafka partition gets its own BulkProcessor (independent "
+                        + "buffers + inflight pool). Multiplies real concurrency by the number of partitions "
+                        + "a task owns - useful when `tasks.max` is smaller than your topic partition count. "
+                        + "When `tasks.max == partitions`, the default shared processor is already optimal.",
+                g, ++order, Width.SHORT, "Per-partition fanout");
+
         return def;
     }
 
@@ -386,6 +415,7 @@ public class SolrSinkConfig extends AbstractConfig {
     public CompressionAlgorithm compressionAlgorithm() {
         return CompressionAlgorithm.parse(getString(CONNECTION_COMPRESSION_ALGORITHM_CONFIG));
     }
+    public boolean compressRequests() { return getBoolean(CONNECTION_COMPRESSION_REQUESTS_CONFIG); }
 
     public String proxyHost() { return getString(PROXY_HOST_CONFIG); }
     public int proxyPort() { return getInt(PROXY_PORT_CONFIG); }
@@ -474,6 +504,10 @@ public class SolrSinkConfig extends AbstractConfig {
     }
 
     public long commitWithinMs() { return getLong(COMMIT_WITHIN_MS_CONFIG); }
+
+    public boolean dryRun() { return getBoolean(DRY_RUN_CONFIG); }
+    public String mappingVersion() { return getString(MAPPING_VERSION_CONFIG); }
+    public boolean partitionFanoutEnabled() { return getBoolean(PARTITION_FANOUT_ENABLED_CONFIG); }
 
     public boolean isCloud() {
         return zkHost() != null && !zkHost().isEmpty();

@@ -20,7 +20,7 @@ import java.util.Set;
  * Optional schema.auto.evolve: maps Kafka schema types onto Solr managed-schema
  * fields and adds missing ones on first sight.
  */
-public class SolrSchemaManager {
+public final class SolrSchemaManager {
 
     private static final Logger log = LoggerFactory.getLogger(SolrSchemaManager.class);
 

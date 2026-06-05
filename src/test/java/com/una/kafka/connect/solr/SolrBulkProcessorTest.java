@@ -157,6 +157,26 @@ class SolrBulkProcessorTest {
     }
 
     @Test
+    void latencyMetricsAreTracked() throws Exception {
+        SolrClient client = mock(SolrClient.class);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
+        // Idle: nothing recorded yet.
+        assertThat(bulk.avgBatchLatencyMs()).isEqualTo(0.0);
+        assertThat(bulk.avgSolrCallLatencyMs()).isEqualTo(0.0);
+        assertThat(bulk.batchCount()).isZero();
+
+        bulk.upsert("c", doc("1"), null);
+        bulk.upsert("c", doc("2"), null);
+        bulk.flushSync();
+
+        assertThat(bulk.batchCount()).isGreaterThanOrEqualTo(1);
+        assertThat(bulk.solrCallCount()).isGreaterThanOrEqualTo(1);
+        // We don't assert specific timing; just that the counters moved.
+        assertThat(bulk.avgBatchLatencyMs()).isGreaterThanOrEqualTo(0.0);
+        bulk.close();
+    }
+
+    @Test
     void offsetStateIsMarkedAcked() throws Exception {
         SolrClient client = mock(SolrClient.class);
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);

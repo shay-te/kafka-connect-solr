@@ -71,4 +71,14 @@ class CollectionResolverTest {
         CollectionResolver r = new CollectionResolver(config("BOGUS", "users"));
         assertThat(r.resolve("anything")).isEqualTo("users");
     }
+
+    @Test
+    void resolveIsMemoised() {
+        // Same topic returned String must be cached (same identity) so the
+        // hot path is a single ConcurrentHashMap lookup, no regex match.
+        CollectionResolver r = new CollectionResolver(config("TOPIC_REGEX", "logs-.*=>logs"));
+        String first = r.resolve("logs-prod");
+        String second = r.resolve("logs-prod");
+        assertThat(first).isSameAs(second);
+    }
 }

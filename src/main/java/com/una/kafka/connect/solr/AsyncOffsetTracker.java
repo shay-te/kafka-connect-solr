@@ -22,7 +22,7 @@ import java.util.Map;
  *         memory.</li>
  * </ul></p>
  */
-public class AsyncOffsetTracker implements OffsetTracker {
+public final class AsyncOffsetTracker implements OffsetTracker {
 
     private final Map<TopicPartition, Deque<OffsetState>> pending = new HashMap<>();
 

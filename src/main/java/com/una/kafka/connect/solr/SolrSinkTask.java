@@ -17,7 +17,6 @@ public class SolrSinkTask extends SinkTask {
     private static final Logger log = LoggerFactory.getLogger(SolrSinkTask.class);
 
     private SolrSinkConfig config;
-    private SolrClient client;
     private SolrWriter writer;
     private OffsetTracker offsetTracker;
 
@@ -30,7 +29,7 @@ public class SolrSinkTask extends SinkTask {
     public void start(Map<String, String> props) {
         log.info("Starting SolrSinkTask v{}", version());
         this.config = new SolrSinkConfig(props);
-        this.client = createClient(config);
+        SolrClient client = createClient(config);
         this.offsetTracker = config.flushSynchronously() ? new SyncOffsetTracker() : new AsyncOffsetTracker();
         this.writer = createWriter(client, config, offsetTracker);
     }
@@ -66,16 +65,27 @@ public class SolrSinkTask extends SinkTask {
             Map<TopicPartition, OffsetAndMetadata> currentOffsets) {
         if (config.flushSynchronously()) {
             writer.flush();
-            log.debug("Solr flush complete: written={}, failed={}, retries={}, queueDepth={}",
-                    writer.recordsWritten(), writer.recordsFailed(),
-                    writer.retries(), writer.queueDepth());
+            logMetrics("sync");
             return currentOffsets;
         }
         // Async mode: fire any pending writes but DO NOT block. Return only
         // the offsets that have actually been acked by Solr so the consumer
         // can keep up while Solr is digesting older batches.
         writer.flushAsync();
+        logMetrics("async");
         return offsetTracker.safeOffsets(currentOffsets);
+    }
+
+    private void logMetrics(String mode) {
+        if (!log.isInfoEnabled()) return;
+        log.info("Solr {} flush: written={} failed={} retries={} queueDepth={} "
+                        + "batches={} avgBatchMs={} avgSolrCallMs={}",
+                mode,
+                writer.recordsWritten(), writer.recordsFailed(),
+                writer.retries(), writer.queueDepth(),
+                writer.batchCount(),
+                String.format("%.2f", writer.avgBatchLatencyMs()),
+                String.format("%.2f", writer.avgSolrCallLatencyMs()));
     }
 
     @Override
@@ -91,6 +101,11 @@ public class SolrSinkTask extends SinkTask {
                 offsetTracker.closePartition(tp);
             }
         }
+        if (writer != null) {
+            for (TopicPartition tp : partitions) {
+                writer.partitionRevoked(tp);
+            }
+        }
     }
 
     @Override
@@ -100,7 +115,11 @@ public class SolrSinkTask extends SinkTask {
             writer.close();
         }
         if (offsetTracker != null) {
-            try { offsetTracker.close(); } catch (Exception ignored) { }
+            try {
+                offsetTracker.close();
+            } catch (Exception e) {
+                log.warn("OffsetTracker close failed: {}", e.getMessage());
+            }
         }
     }
 }

@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.LongAdder;
 
 public final class RetryUtil {
 
@@ -18,6 +19,16 @@ public final class RetryUtil {
     }
 
     public static <T> T retry(Callable<T> action, int maxRetries, long initialBackoffMs, String description) {
+        return retry(action, maxRetries, initialBackoffMs, description, null);
+    }
+
+    /**
+     * Same as {@link #retry(Callable, int, long, String)} but also increments
+     * the supplied {@link LongAdder} once per retry attempt. Lets callers
+     * expose a "total retries" metric without us tracking it ourselves.
+     */
+    public static <T> T retry(Callable<T> action, int maxRetries, long initialBackoffMs,
+                              String description, LongAdder retriesCounter) {
         int attempt = 0;
         long backoff = initialBackoffMs;
         Exception last = null;
@@ -36,6 +47,9 @@ public final class RetryUtil {
                     break;
                 }
                 attempt++;
+                if (retriesCounter != null) {
+                    retriesCounter.increment();
+                }
                 log.warn("{} attempt {}/{} failed: {}. Retrying in {}ms",
                         description, attempt, maxRetries, e.getMessage(), backoff);
                 try {
