@@ -27,7 +27,7 @@ class SolrBulkProcessorTest {
         p.put(SolrSinkConfig.SOLR_URL_CONFIG, "http://x");
         p.put(SolrSinkConfig.SOLR_COLLECTION_CONFIG, "c");
         p.put(SolrSinkConfig.BATCH_SIZE_CONFIG, "2");
-        p.put(SolrSinkConfig.LINGER_MS_CONFIG, "100000"); // effectively disable linger-based flush
+        p.put(SolrSinkConfig.LINGER_MS_CONFIG, "100000");
         p.put(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG, "2");
         p.put(SolrSinkConfig.MAX_BUFFERED_RECORDS_CONFIG, "10000");
         p.put(SolrSinkConfig.MAX_RETRIES_CONFIG, "1");
@@ -37,14 +37,19 @@ class SolrBulkProcessorTest {
         return new SolrSinkConfig(p);
     }
 
+    private static SolrInputDocument doc(String id) {
+        SolrInputDocument d = new SolrInputDocument();
+        d.addField("id", id);
+        return d;
+    }
+
     @Test
     void batchTriggersWhenFull() throws Exception {
         SolrClient client = mock(SolrClient.class);
-        SolrSchemaManager schemaManager = mock(SolrSchemaManager.class);
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), schemaManager);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
 
-        bulk.upsert("c", new SolrInputDocument("id", "1"));
-        bulk.upsert("c", new SolrInputDocument("id", "2"));
+        bulk.upsert("c", doc("1"));
+        bulk.upsert("c", doc("2"));
         bulk.flushSync();
 
         verify(client, atLeastOnce()).request(any(UpdateRequest.class), anyString());
@@ -79,8 +84,8 @@ class SolrBulkProcessorTest {
         Map<String, String> overrides = new HashMap<>();
         overrides.put(SolrSinkConfig.MAX_RETRIES_CONFIG, "3");
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(overrides), null);
-        bulk.upsert("c", new SolrInputDocument("id", "1"));
-        bulk.upsert("c", new SolrInputDocument("id", "2"));
+        bulk.upsert("c", doc("1"));
+        bulk.upsert("c", doc("2"));
         bulk.flushSync();
 
         assertThat(attempts.get()).isGreaterThanOrEqualTo(2);
@@ -94,8 +99,8 @@ class SolrBulkProcessorTest {
                 .thenThrow(new BaseHttpSolrClient.RemoteSolrException("u", 400, "bad", null));
 
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
-        bulk.upsert("c", new SolrInputDocument("id", "1"));
-        bulk.upsert("c", new SolrInputDocument("id", "2"));
+        bulk.upsert("c", doc("1"));
+        bulk.upsert("c", doc("2"));
 
         assertThatThrownBy(bulk::flushSync).isInstanceOf(RetriableException.class);
         bulk.close();
@@ -105,9 +110,8 @@ class SolrBulkProcessorTest {
     void closeFlushesAndShutsDown() throws Exception {
         SolrClient client = mock(SolrClient.class);
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
-        bulk.upsert("c", new SolrInputDocument("id", "1"));
+        bulk.upsert("c", doc("1"));
         bulk.close(); // implicitly flushes
-        // No assertion on counts because timing is tight; we just ensure no exception.
     }
 
     @Test
@@ -118,6 +122,20 @@ class SolrBulkProcessorTest {
         assertThat(bulk.recordsFailed()).isZero();
         assertThat(bulk.retries()).isZero();
         assertThat(bulk.queueDepth()).isZero();
+        bulk.close();
+    }
+
+    @Test
+    void lingerTriggersFlush() throws Exception {
+        Map<String, String> overrides = new HashMap<>();
+        overrides.put(SolrSinkConfig.LINGER_MS_CONFIG, "0"); // immediate
+        overrides.put(SolrSinkConfig.BATCH_SIZE_CONFIG, "1000");
+        SolrClient client = mock(SolrClient.class);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(overrides), null);
+
+        bulk.upsert("c", doc("1"));
+        bulk.flushSync();
+        verify(client, atLeastOnce()).request(any(UpdateRequest.class), anyString());
         bulk.close();
     }
 }

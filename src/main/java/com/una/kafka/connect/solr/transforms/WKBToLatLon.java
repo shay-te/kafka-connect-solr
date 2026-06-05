@@ -77,7 +77,11 @@ public class WKBToLatLon<R extends ConnectRecord<R>> implements Transformation<R
     }
 
     private R applyStruct(R record, Struct value) {
-        Object raw = value.get(fieldName);
+        Field srcField = value.schema().field(fieldName);
+        if (srcField == null) {
+            return record;
+        }
+        Object raw = value.get(srcField);
         String wkbString = extractWkbString(raw);
         if (wkbString == null) {
             return record;
