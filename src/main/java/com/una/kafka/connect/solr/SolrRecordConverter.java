@@ -26,6 +26,10 @@ public final class SolrRecordConverter {
 
     private static final Base64.Encoder BASE64 = Base64.getEncoder();
     private static final FieldEncoder[] EMPTY_PLAN = new FieldEncoder[0];
+    private static final ThreadLocal<StringBuilder> TPO_BUILDER =
+            ThreadLocal.withInitial(() -> new StringBuilder(64));
+    private static final ThreadLocal<java.util.ArrayList<org.apache.solr.common.SolrInputField>> AU_SNAPSHOT =
+            ThreadLocal.withInitial(java.util.ArrayList::new);
 
     private final IdStrategy idStrategy;
     private final WriteMethod writeMethod;
@@ -54,18 +58,18 @@ public final class SolrRecordConverter {
     }
 
     public SolrInputDocument convert(SinkRecord record, boolean keyIgnored) {
-        if (record.value() == null) {
+        Object value = record.value();
+        if (value == null) {
             return null;
         }
-
-        SolrInputDocument doc = new SolrInputDocument();
+        Schema schema = record.valueSchema();
+        int hint = estimateFieldHint(value, schema);
+        SolrInputDocument doc = new SolrInputDocument(new LinkedHashMap<>(hint));
         doc.addField("id", deriveId(record, keyIgnored));
         if (!mappingVersion.isEmpty()) {
             doc.addField("_mapping_version", mappingVersion);
         }
 
-        Object value = record.value();
-        Schema schema = record.valueSchema();
         if (value instanceof Struct) {
             populateFromStruct(doc, (Struct) value, schema, "");
         } else if (value instanceof Map) {
@@ -78,6 +82,17 @@ public final class SolrRecordConverter {
             applyAtomicUpdate(doc);
         }
         return doc;
+    }
+
+    private int estimateFieldHint(Object value, Schema schema) {
+        int base = mappingVersion.isEmpty() ? 1 : 2;
+        if (schema != null && schema.type() == Schema.Type.STRUCT) {
+            return base + schema.fields().size();
+        }
+        if (value instanceof Map) {
+            return base + ((Map<?, ?>) value).size();
+        }
+        return base + 8;
     }
 
     public String deriveId(SinkRecord record) {
@@ -102,12 +117,14 @@ public final class SolrRecordConverter {
                     throw new DataException("id.strategy=RECORD_FIELD but field '" + idField + "' is null");
                 }
                 return id instanceof String ? (String) id : String.valueOf(id);
-            case TOPIC_PARTITION_OFFSET:
-                return new StringBuilder(record.topic().length() + 24)
-                        .append(record.topic()).append('-')
+            case TOPIC_PARTITION_OFFSET: {
+                StringBuilder sb = TPO_BUILDER.get();
+                sb.setLength(0);
+                return sb.append(record.topic()).append('-')
                         .append(record.kafkaPartition()).append('-')
                         .append(record.kafkaOffset())
                         .toString();
+            }
             case UUID:
                 return UUID.randomUUID().toString();
             default:
@@ -180,11 +197,18 @@ public final class SolrRecordConverter {
                 };
             case ARRAY:
                 Schema elementSchema = sub.valueSchema();
+                ScalarEncoder elementEncoder = scalarEncoderFor(elementSchema);
                 return (conv, doc, src) -> {
                     Object v = src.get(field);
-                    if (v instanceof Collection) {
+                    if (v instanceof List) {
+                        List<?> list = (List<?>) v;
+                        for (int i = 0, n = list.size(); i < n; i++) {
+                            Object item = list.get(i);
+                            if (item != null) elementEncoder.write(conv, doc, name, item);
+                        }
+                    } else if (v instanceof Collection) {
                         for (Object item : (Collection<?>) v) {
-                            conv.addScalar(doc, name, item, elementSchema);
+                            if (item != null) elementEncoder.write(conv, doc, name, item);
                         }
                     }
                 };
@@ -272,18 +296,19 @@ public final class SolrRecordConverter {
     }
 
     private void applyAtomicUpdate(SolrInputDocument doc) {
-        // Snapshot before mutating: setField on the names we're iterating triggers ConcurrentModification.
-        String[] names = doc.getFieldNames().toArray(new String[0]);
-        for (String name : names) {
-            if ("id".equals(name)) {
-                continue;
-            }
-            Object original = doc.getFieldValue(name);
-            if (original == null) {
-                continue;
-            }
+        // Snapshot before mutating: setField on the fields we're iterating triggers ConcurrentModification.
+        java.util.ArrayList<org.apache.solr.common.SolrInputField> snap = AU_SNAPSHOT.get();
+        snap.clear();
+        for (org.apache.solr.common.SolrInputField f : doc) snap.add(f);
+        for (int i = 0, n = snap.size(); i < n; i++) {
+            org.apache.solr.common.SolrInputField f = snap.get(i);
+            String name = f.getName();
+            if ("id".equals(name)) continue;
+            Object original = f.getValue();
+            if (original == null) continue;
             doc.setField(name, Map.of("set", original));
         }
+        snap.clear();
     }
 
     private static Object extractField(Object value, String[] path) {
@@ -305,8 +330,61 @@ public final class SolrRecordConverter {
         return cur;
     }
 
+    private static ScalarEncoder scalarEncoderFor(Schema schema) {
+        if (schema != null && schema.name() != null) {
+            switch (schema.name()) {
+                case Timestamp.LOGICAL_NAME:
+                case Date.LOGICAL_NAME:
+                case Time.LOGICAL_NAME:
+                    return (conv, doc, name, value) -> doc.addField(name, ((java.util.Date) value).toInstant().toString());
+                case Decimal.LOGICAL_NAME:
+                    return (conv, doc, name, value) -> doc.addField(name, value.toString());
+                default:
+                    break;
+            }
+        }
+        if (schema == null) {
+            return SolrRecordConverter::addScalarUntyped;
+        }
+        switch (schema.type()) {
+            case STRUCT:
+                return (conv, doc, name, value) -> conv.populateFromStruct(doc, (Struct) value, ((Struct) value).schema(), name);
+            case MAP:
+                return (conv, doc, name, value) -> conv.populateFromMap(doc, (Map<?, ?>) value, name);
+            case BYTES:
+                return (conv, doc, name, value) -> {
+                    if (value instanceof byte[]) doc.addField(name, BASE64.encodeToString((byte[]) value));
+                    else if (value instanceof ByteBuffer) doc.addField(name, BASE64.encodeToString(((ByteBuffer) value).array()));
+                };
+            default:
+                return (conv, doc, name, value) -> doc.addField(name, value);
+        }
+    }
+
+    private static void addScalarUntyped(SolrRecordConverter conv, SolrInputDocument doc, String name, Object value) {
+        if (value instanceof Struct) {
+            Struct s = (Struct) value;
+            conv.populateFromStruct(doc, s, s.schema(), name);
+        } else if (value instanceof Map) {
+            conv.populateFromMap(doc, (Map<?, ?>) value, name);
+        } else if (value instanceof byte[]) {
+            doc.addField(name, BASE64.encodeToString((byte[]) value));
+        } else if (value instanceof ByteBuffer) {
+            doc.addField(name, BASE64.encodeToString(((ByteBuffer) value).array()));
+        } else if (value instanceof java.util.Date) {
+            doc.addField(name, ((java.util.Date) value).toInstant().toString());
+        } else {
+            doc.addField(name, value);
+        }
+    }
+
     @FunctionalInterface
     interface FieldEncoder {
         void encode(SolrRecordConverter conv, SolrInputDocument doc, Struct src);
+    }
+
+    @FunctionalInterface
+    interface ScalarEncoder {
+        void write(SolrRecordConverter conv, SolrInputDocument doc, String name, Object value);
     }
 }

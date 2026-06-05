@@ -1,5 +1,6 @@
 package com.una.kafka.connect.solr;
 
+import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.regex.Matcher;
@@ -28,54 +29,74 @@ import java.util.regex.Pattern;
  */
 public final class CollectionResolver {
 
-    private final SolrSinkConfig config;
+    private enum Strategy { STATIC, TOPIC, TOPIC_REGEX }
+
+    private final Strategy strategy;
+    private final String defaultCollection;
     private final Pattern regex;
     private final String replacement;
     private final ConcurrentMap<String, String> cache = new ConcurrentHashMap<>();
+    private volatile String lastTopic;
+    private volatile String lastResolved;
 
     public CollectionResolver(SolrSinkConfig config) {
-        this.config = config;
-        if ("TOPIC_REGEX".equalsIgnoreCase(config.collectionNamingStrategy())) {
-            String raw = config.defaultCollection();
-            int idx = raw.indexOf("=>");
+        String raw = config.collectionNamingStrategy();
+        this.strategy = parseStrategy(raw);
+        this.defaultCollection = config.defaultCollection();
+        if (strategy == Strategy.TOPIC_REGEX) {
+            int idx = defaultCollection.indexOf("=>");
             if (idx < 0) {
                 throw new IllegalArgumentException(
                         "collection.naming.strategy=TOPIC_REGEX requires solr.collection "
-                                + "in 'pattern=>replacement' form, got: " + raw);
+                                + "in 'pattern=>replacement' form, got: " + defaultCollection);
             }
-            this.regex = Pattern.compile(raw.substring(0, idx).trim());
-            this.replacement = raw.substring(idx + 2).trim();
+            this.regex = Pattern.compile(defaultCollection.substring(0, idx).trim());
+            this.replacement = defaultCollection.substring(idx + 2).trim();
         } else {
             this.regex = null;
             this.replacement = null;
         }
     }
 
+    private static Strategy parseStrategy(String raw) {
+        if (raw == null) return Strategy.TOPIC;
+        switch (raw.toUpperCase(Locale.ROOT)) {
+            case "STATIC":      return Strategy.STATIC;
+            case "TOPIC_REGEX": return Strategy.TOPIC_REGEX;
+            case "TOPIC":
+            default:            return Strategy.TOPIC;
+        }
+    }
+
     public String resolve(String topic) {
+        String lt = lastTopic;
+        if (lt != null && lt.equals(topic)) {
+            return lastResolved;
+        }
         String cached = cache.get(topic);
         if (cached != null) {
+            lastTopic = topic;
+            lastResolved = cached;
             return cached;
         }
-        // computeIfAbsent would be cleaner but allocates a lambda capture
-        // on every call. The double-get pattern avoids that on the hot path.
         String computed = compute(topic);
         String existing = cache.putIfAbsent(topic, computed);
-        return existing != null ? existing : computed;
+        String result = existing != null ? existing : computed;
+        lastTopic = topic;
+        lastResolved = result;
+        return result;
     }
 
     private String compute(String topic) {
-        switch (config.collectionNamingStrategy().toUpperCase()) {
-            case "STATIC":
-                return config.defaultCollection().isEmpty() ? topic : config.defaultCollection();
-            case "TOPIC_REGEX":
+        switch (strategy) {
+            case STATIC:
+                return defaultCollection.isEmpty() ? topic : defaultCollection;
+            case TOPIC_REGEX:
                 Matcher m = regex.matcher(topic);
-                if (m.matches()) {
-                    return m.replaceAll(replacement);
-                }
-                return topic;
-            case "TOPIC":
+                return m.matches() ? m.replaceAll(replacement) : topic;
+            case TOPIC:
             default:
-                return config.defaultCollection().isEmpty() ? topic : config.defaultCollection();
+                return defaultCollection.isEmpty() ? topic : defaultCollection;
         }
     }
 }

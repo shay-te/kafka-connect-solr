@@ -54,7 +54,7 @@ class CounterMetricsTest {
             return null;
         });
 
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(o), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(o));
         bulk.upsert("c", doc("1"), null);
         bulk.flushSync();
 
@@ -76,7 +76,7 @@ class CounterMetricsTest {
             // mock setup
         }
 
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(o), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(o));
         bulk.upsert("c", doc("1"), null);
         bulk.upsert("c", doc("2"), null);
 
@@ -98,7 +98,7 @@ class CounterMetricsTest {
             // mock setup
         }
 
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()));
         bulk.upsert("c", doc("1"), null);
 
         assertThatThrownBy(bulk::flushSync).isInstanceOf(RuntimeException.class);

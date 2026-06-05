@@ -91,6 +91,29 @@ class SolrSchemaManagerTest {
     }
 
     @Test
+    void repeatedCallsWithSameSchemaSkipTheWalk() throws Exception {
+        SolrClient client = mock(SolrClient.class);
+        NamedList<Object> existing = new NamedList<>();
+        existing.add("fields", new ArrayList<Map<String, Object>>());
+        when(client.request(any(SchemaRequest.Fields.class), anyString())).thenReturn(existing);
+        when(client.request(any(SchemaRequest.AddField.class), anyString())).thenReturn(new NamedList<>());
+
+        Schema schema = SchemaBuilder.struct()
+                .field("name", Schema.STRING_SCHEMA)
+                .field("age", Schema.INT32_SCHEMA)
+                .build();
+
+        SolrSchemaManager mgr = new SolrSchemaManager(client, cfg(true));
+        mgr.evolveIfNeeded("c", schema);
+        mgr.evolveIfNeeded("c", schema);
+        mgr.evolveIfNeeded("c", schema);
+
+        // First call adds the two fields; subsequent calls short-circuit on the seen-schemas cache.
+        verify(client, org.mockito.Mockito.times(2))
+                .request(any(SchemaRequest.AddField.class), anyString());
+    }
+
+    @Test
     void typeMappingMatrix() {
         assertThat(SolrSchemaManager.solrTypeFor(null)).isEqualTo("string");
         assertThat(SolrSchemaManager.solrTypeFor(Schema.STRING_SCHEMA)).isEqualTo("string");

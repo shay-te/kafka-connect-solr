@@ -81,8 +81,8 @@ public class SolrSinkTask extends SinkTask {
                 writer.recordsWritten(), writer.recordsFailed(),
                 writer.retries(), writer.queueDepth(),
                 writer.batchCount(),
-                String.format("%.2f", writer.avgBatchLatencyMs()),
-                String.format("%.2f", writer.avgSolrCallLatencyMs()));
+                String.format(java.util.Locale.ROOT, "%.2f", writer.avgBatchLatencyMs()),
+                String.format(java.util.Locale.ROOT, "%.2f", writer.avgSolrCallLatencyMs()));
     }
 
     @Override

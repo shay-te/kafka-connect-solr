@@ -38,7 +38,7 @@ class SolrBulkProcessorParityTest {
     @Test
     void closeIsIdempotentEvenAfterFailure() {
         SolrClient client = mock(SolrClient.class);
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg());
         bulk.close();
         bulk.close(); // second close must not throw
     }
@@ -50,7 +50,7 @@ class SolrBulkProcessorParityTest {
         // UpdateRequests, never a Create. We verify by inspecting the only
         // request type that goes through.
         SolrClient client = mock(SolrClient.class);
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg());
         SolrInputDocument d = new SolrInputDocument();
         d.addField("id", "1");
         bulk.upsert("c", d, null);
@@ -75,7 +75,7 @@ class SolrBulkProcessorParityTest {
             return null;
         });
 
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg());
         SolrInputDocument d = new SolrInputDocument();
         d.addField("id", "1");
         bulk.upsert("c", d, null);

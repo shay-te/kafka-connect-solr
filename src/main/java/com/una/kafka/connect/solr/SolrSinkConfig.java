@@ -6,8 +6,6 @@ import org.apache.kafka.common.config.ConfigDef.Importance;
 import org.apache.kafka.common.config.ConfigDef.Type;
 import org.apache.kafka.common.config.ConfigDef.Width;
 
-import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -464,10 +462,10 @@ public class SolrSinkConfig extends AbstractConfig {
     public boolean keyIgnore() { return getBoolean(KEY_IGNORE_CONFIG); }
     public boolean schemaIgnore() { return getBoolean(SCHEMA_IGNORE_CONFIG); }
     public Set<String> topicKeyIgnoreSet() {
-        return Collections.unmodifiableSet(new HashSet<>(getList(TOPIC_KEY_IGNORE_CONFIG)));
+        return Set.copyOf(getList(TOPIC_KEY_IGNORE_CONFIG));
     }
     public Set<String> topicSchemaIgnoreSet() {
-        return Collections.unmodifiableSet(new HashSet<>(getList(TOPIC_SCHEMA_IGNORE_CONFIG)));
+        return Set.copyOf(getList(TOPIC_SCHEMA_IGNORE_CONFIG));
     }
     public boolean compactMapEntries() { return getBoolean(COMPACT_MAP_ENTRIES_CONFIG); }
     public boolean dropInvalidMessage() { return getBoolean(DROP_INVALID_MESSAGE_CONFIG); }

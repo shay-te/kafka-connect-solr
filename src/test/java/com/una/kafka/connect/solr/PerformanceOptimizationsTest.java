@@ -145,7 +145,7 @@ class PerformanceOptimizationsTest {
         p.put(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG, "8");
         p.put(SolrSinkConfig.MAX_RETRIES_CONFIG, "0");
         SolrClient client = mock(SolrClient.class);
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, new SolrSinkConfig(p), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, new SolrSinkConfig(p));
 
         final int total = 500;
         ExecutorService exec = Executors.newFixedThreadPool(8);
@@ -181,7 +181,7 @@ class PerformanceOptimizationsTest {
         p.put(SolrSinkConfig.BATCH_SIZE_CONFIG, "10");
         p.put(SolrSinkConfig.LINGER_MS_CONFIG, "1");
         SolrClient client = mock(SolrClient.class);
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, new SolrSinkConfig(p), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, new SolrSinkConfig(p));
 
         for (int i = 0; i < 200; i++) {
             SolrInputDocument d = new SolrInputDocument();
@@ -206,7 +206,7 @@ class PerformanceOptimizationsTest {
         p.put(SolrSinkConfig.BULK_SIZE_BYTES_CONFIG, "100"); // tiny cap
         p.put(SolrSinkConfig.LINGER_MS_CONFIG, "60000");     // big
         SolrClient client = mock(SolrClient.class);
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, new SolrSinkConfig(p), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, new SolrSinkConfig(p));
 
         SolrInputDocument doc = new SolrInputDocument();
         doc.addField("id", "1");

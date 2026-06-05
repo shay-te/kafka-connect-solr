@@ -73,7 +73,7 @@ class SolrBulkProcessorStressTest {
             return null;
         });
 
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(batchSize, 8, 20_000), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(batchSize, 8, 20_000));
         long t0 = System.nanoTime();
         for (int i = 0; i < records; i++) {
             bulk.upsert("c", doc(i), null);
@@ -105,7 +105,7 @@ class SolrBulkProcessorStressTest {
             return null;
         });
 
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(500, 4, 1_000), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(500, 4, 1_000));
         // Push way more than maxBuffer to force back-pressure via inflight queue.
         for (int i = 0; i < 20_000; i++) {
             bulk.upsert("c", doc(i), null);

@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.Supplier;
 
 public final class RetryUtil {
 
@@ -19,16 +20,16 @@ public final class RetryUtil {
     }
 
     public static <T> T retry(Callable<T> action, int maxRetries, long initialBackoffMs, String description) {
-        return retry(action, maxRetries, initialBackoffMs, description, null);
+        return retry(action, maxRetries, initialBackoffMs, () -> description, null);
     }
 
-    /**
-     * Same as {@link #retry(Callable, int, long, String)} but also increments
-     * the supplied {@link LongAdder} once per retry attempt. Lets callers
-     * expose a "total retries" metric without us tracking it ourselves.
-     */
     public static <T> T retry(Callable<T> action, int maxRetries, long initialBackoffMs,
                               String description, LongAdder retriesCounter) {
+        return retry(action, maxRetries, initialBackoffMs, () -> description, retriesCounter);
+    }
+
+    public static <T> T retry(Callable<T> action, int maxRetries, long initialBackoffMs,
+                              Supplier<String> description, LongAdder retriesCounter) {
         int attempt = 0;
         long backoff = initialBackoffMs;
         Exception last = null;
@@ -41,7 +42,7 @@ public final class RetryUtil {
                     if (e instanceof RuntimeException) {
                         throw (RuntimeException) e;
                     }
-                    throw new ConnectException(description + " failed", e);
+                    throw new ConnectException(description.get() + " failed", e);
                 }
                 if (attempt == maxRetries) {
                     break;
@@ -51,7 +52,7 @@ public final class RetryUtil {
                     retriesCounter.increment();
                 }
                 log.warn("{} attempt {}/{} failed: {}. Retrying in {}ms",
-                        description, attempt, maxRetries, e.getMessage(), backoff);
+                        description.get(), attempt, maxRetries, e.getMessage(), backoff);
                 try {
                     Thread.sleep(backoff);
                 } catch (InterruptedException ie) {
@@ -61,7 +62,7 @@ public final class RetryUtil {
                 backoff = Math.min(MAX_BACKOFF_MS, backoff * 2);
             }
         }
-        throw new RetriableException(description + " exhausted retries", last);
+        throw new RetriableException(description.get() + " exhausted retries", last);
     }
 
     public static boolean isRetriable(Throwable t) {

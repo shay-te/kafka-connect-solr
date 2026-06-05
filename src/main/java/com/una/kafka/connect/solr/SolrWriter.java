@@ -30,6 +30,8 @@ public final class SolrWriter implements AutoCloseable {
 
     private final Set<String> topicsIgnoreKey;
     private final Set<String> topicsIgnoreSchema;
+    private final boolean topicsIgnoreKeyEmpty;
+    private final boolean topicsIgnoreSchemaEmpty;
 
     private final boolean keyIgnoreGlobal;
     private final boolean externalVersioningEnabled;
@@ -55,6 +57,8 @@ public final class SolrWriter implements AutoCloseable {
         this.offsetTracker = offsetTracker;
         this.topicsIgnoreKey = config.topicKeyIgnoreSet();
         this.topicsIgnoreSchema = config.topicSchemaIgnoreSet();
+        this.topicsIgnoreKeyEmpty = topicsIgnoreKey.isEmpty();
+        this.topicsIgnoreSchemaEmpty = topicsIgnoreSchema.isEmpty();
         this.keyIgnoreGlobal = config.keyIgnore();
         this.externalVersioningEnabled = config.externalVersioningEnabled();
         this.externalVersionHeader = config.externalVersionHeader();
@@ -67,7 +71,7 @@ public final class SolrWriter implements AutoCloseable {
             this.perPartition = new ConcurrentHashMap<>();
             log.info("SolrWriter: per-partition fanout enabled");
         } else {
-            this.sharedProcessor = new SolrBulkProcessor(client, config, schemaManager);
+            this.sharedProcessor = new SolrBulkProcessor(client, config);
             this.perPartition = null;
         }
     }
@@ -89,7 +93,7 @@ public final class SolrWriter implements AutoCloseable {
         SolrBulkProcessor proc = perPartition.get(tp);
         if (proc == null) {
             proc = perPartition.computeIfAbsent(tp,
-                    k -> new SolrBulkProcessor(client, config, schemaManager));
+                    k -> new SolrBulkProcessor(client, config));
         }
         lastTopic = topic;
         lastPartition = partition;
@@ -98,7 +102,8 @@ public final class SolrWriter implements AutoCloseable {
     }
 
     public void write(SinkRecord record) {
-        String collection = collections.resolve(record.topic());
+        String topic = record.topic();
+        String collection = collections.resolve(topic);
         resources.ensure(collection);
         SolrBulkProcessor bulk = processorFor(record);
         if (record.value() == null) {
@@ -106,20 +111,18 @@ public final class SolrWriter implements AutoCloseable {
             return;
         }
         try {
-            if (!topicsIgnoreSchema.contains(record.topic())) {
+            if (topicsIgnoreSchemaEmpty || !topicsIgnoreSchema.contains(topic)) {
                 schemaManager.evolveIfNeeded(collection, record.valueSchema());
             }
-            SolrInputDocument doc = converter.convert(record, isKeyIgnored(record.topic()));
+            boolean keyIgnored = keyIgnoreGlobal
+                    || (!topicsIgnoreKeyEmpty && topicsIgnoreKey.contains(topic));
+            SolrInputDocument doc = converter.convert(record, keyIgnored);
             applyExternalVersion(doc, record);
             OffsetState state = offsetTracker.track(record);
             bulk.upsert(collection, doc, state);
         } catch (DataException de) {
             handleMalformed(record, de);
         }
-    }
-
-    private boolean isKeyIgnored(String topic) {
-        return keyIgnoreGlobal || topicsIgnoreKey.contains(topic);
     }
 
     private void applyExternalVersion(SolrInputDocument doc, SinkRecord record) {
@@ -139,40 +142,73 @@ public final class SolrWriter implements AutoCloseable {
     private Long coerceLong(Object v) {
         if (v == null) return null;
         if (v instanceof Number) return ((Number) v).longValue();
-        if (v instanceof byte[]) {
-            String s = new String((byte[]) v, java.nio.charset.StandardCharsets.UTF_8).trim();
-            try { return Long.parseLong(s); } catch (NumberFormatException e) { return null; }
+        if (v instanceof byte[]) return parseAsciiLong((byte[]) v);
+        if (v instanceof CharSequence) return parseAsciiLong((CharSequence) v);
+        return parseAsciiLong(v.toString());
+    }
+
+    static Long parseAsciiLong(byte[] b) {
+        int n = b.length;
+        int i = 0, end = n;
+        while (i < end && b[i] <= 0x20) i++;
+        while (end > i && b[end - 1] <= 0x20) end--;
+        if (i == end) return null;
+        boolean neg = false;
+        if (b[i] == '-') { neg = true; i++; }
+        else if (b[i] == '+') { i++; }
+        if (i == end) return null;
+        long acc = 0;
+        for (; i < end; i++) {
+            int d = b[i] - '0';
+            if (d < 0 || d > 9) return null;
+            acc = acc * 10 + d;
         }
-        String s = v.toString().trim();
-        try { return Long.parseLong(s); } catch (NumberFormatException e) { return null; }
+        return neg ? -acc : acc;
+    }
+
+    static Long parseAsciiLong(CharSequence s) {
+        int n = s.length();
+        int i = 0, end = n;
+        while (i < end && s.charAt(i) <= 0x20) i++;
+        while (end > i && s.charAt(end - 1) <= 0x20) end--;
+        if (i == end) return null;
+        boolean neg = false;
+        char c0 = s.charAt(i);
+        if (c0 == '-') { neg = true; i++; }
+        else if (c0 == '+') { i++; }
+        if (i == end) return null;
+        long acc = 0;
+        for (; i < end; i++) {
+            int d = s.charAt(i) - '0';
+            if (d < 0 || d > 9) return null;
+            acc = acc * 10 + d;
+        }
+        return neg ? -acc : acc;
     }
 
     private void handleTombstone(SinkRecord record, String collection, SolrBulkProcessor bulk) {
-        BehaviorOnNullValues behavior = behaviorOnNullValues;
-        switch (behavior) {
+        switch (behaviorOnNullValues) {
             case IGNORE:
                 return;
             case FAIL:
                 throw new DataException("Tombstone record encountered with behavior=fail: "
                         + record.topic() + "-" + record.kafkaPartition() + "@" + record.kafkaOffset());
             case DELETE:
-                if (record.key() == null) {
+                Object key = record.key();
+                if (key == null) {
                     log.warn("Tombstone has null key, cannot delete; skipping");
                     return;
                 }
-                Object key = record.key();
                 String id = key instanceof String ? (String) key : String.valueOf(key);
-                OffsetState state = offsetTracker.track(record);
-                bulk.delete(collection, id, state);
+                bulk.delete(collection, id, offsetTracker.track(record));
                 return;
             default:
-                throw new DataException("Unknown null value behavior: " + behavior);
+                throw new DataException("Unknown null value behavior: " + behaviorOnNullValues);
         }
     }
 
     private void handleMalformed(SinkRecord record, DataException de) {
-        BehaviorOnMalformed behavior = behaviorOnMalformed;
-        switch (behavior) {
+        switch (behaviorOnMalformed) {
             case IGNORE:
                 return;
             case WARN:
@@ -216,82 +252,45 @@ public final class SolrWriter implements AutoCloseable {
         }
     }
 
-    public long recordsWritten() {
-        if (!partitionFanout) return sharedProcessor.recordsWritten();
+    public long recordsWritten()        { return sumLong(SolrBulkProcessor::recordsWritten); }
+    public long recordsFailed()         { return sumLong(SolrBulkProcessor::recordsFailed); }
+    public long retries()               { return sumLong(SolrBulkProcessor::retries); }
+    public int  queueDepth()            { return (int) sumLong(p -> (long) p.queueDepth()); }
+    public long batchCount()            { return sumLong(SolrBulkProcessor::batchCount); }
+    public long solrCallCount()         { return sumLong(SolrBulkProcessor::solrCallCount); }
+    public double avgBatchLatencyMs()   { return weightedAvg(SolrBulkProcessor::avgBatchLatencyMs, SolrBulkProcessor::batchCount); }
+    public double avgSolrCallLatencyMs(){ return weightedAvg(SolrBulkProcessor::avgSolrCallLatencyMs, SolrBulkProcessor::solrCallCount); }
+    public long lastSuccessEpochMs()    { return maxLong(SolrBulkProcessor::lastSuccessEpochMs); }
+
+    private long sumLong(java.util.function.ToLongFunction<SolrBulkProcessor> f) {
+        if (!partitionFanout) return f.applyAsLong(sharedProcessor);
         long total = 0;
-        for (SolrBulkProcessor p : perPartition.values()) total += p.recordsWritten();
+        for (SolrBulkProcessor p : perPartition.values()) total += f.applyAsLong(p);
         return total;
     }
 
-    public long recordsFailed() {
-        if (!partitionFanout) return sharedProcessor.recordsFailed();
-        long total = 0;
-        for (SolrBulkProcessor p : perPartition.values()) total += p.recordsFailed();
-        return total;
-    }
-
-    public long retries() {
-        if (!partitionFanout) return sharedProcessor.retries();
-        long total = 0;
-        for (SolrBulkProcessor p : perPartition.values()) total += p.retries();
-        return total;
-    }
-
-    public int queueDepth() {
-        if (!partitionFanout) return sharedProcessor.queueDepth();
-        int total = 0;
-        for (SolrBulkProcessor p : perPartition.values()) total += p.queueDepth();
-        return total;
-    }
-
-    public long batchCount() {
-        if (!partitionFanout) return sharedProcessor.batchCount();
-        long total = 0;
-        for (SolrBulkProcessor p : perPartition.values()) total += p.batchCount();
-        return total;
-    }
-
-    public long solrCallCount() {
-        if (!partitionFanout) return sharedProcessor.solrCallCount();
-        long total = 0;
-        for (SolrBulkProcessor p : perPartition.values()) total += p.solrCallCount();
-        return total;
-    }
-
-    public double avgBatchLatencyMs() {
-        if (!partitionFanout) return sharedProcessor.avgBatchLatencyMs();
-        long totalCount = 0;
-        double weightedSum = 0.0;
-        for (SolrBulkProcessor p : perPartition.values()) {
-            long c = p.batchCount();
-            if (c == 0) continue;
-            weightedSum += p.avgBatchLatencyMs() * c;
-            totalCount += c;
-        }
-        return totalCount == 0 ? 0.0 : weightedSum / totalCount;
-    }
-
-    public double avgSolrCallLatencyMs() {
-        if (!partitionFanout) return sharedProcessor.avgSolrCallLatencyMs();
-        long totalCount = 0;
-        double weightedSum = 0.0;
-        for (SolrBulkProcessor p : perPartition.values()) {
-            long c = p.solrCallCount();
-            if (c == 0) continue;
-            weightedSum += p.avgSolrCallLatencyMs() * c;
-            totalCount += c;
-        }
-        return totalCount == 0 ? 0.0 : weightedSum / totalCount;
-    }
-
-    public long lastSuccessEpochMs() {
-        if (!partitionFanout) return sharedProcessor.lastSuccessEpochMs();
+    private long maxLong(java.util.function.ToLongFunction<SolrBulkProcessor> f) {
+        if (!partitionFanout) return f.applyAsLong(sharedProcessor);
         long max = 0L;
         for (SolrBulkProcessor p : perPartition.values()) {
-            long t = p.lastSuccessEpochMs();
+            long t = f.applyAsLong(p);
             if (t > max) max = t;
         }
         return max;
+    }
+
+    private double weightedAvg(java.util.function.ToDoubleFunction<SolrBulkProcessor> value,
+                               java.util.function.ToLongFunction<SolrBulkProcessor> weight) {
+        if (!partitionFanout) return value.applyAsDouble(sharedProcessor);
+        long totalCount = 0;
+        double weightedSum = 0.0;
+        for (SolrBulkProcessor p : perPartition.values()) {
+            long c = weight.applyAsLong(p);
+            if (c == 0) continue;
+            weightedSum += value.applyAsDouble(p) * c;
+            totalCount += c;
+        }
+        return totalCount == 0 ? 0.0 : weightedSum / totalCount;
     }
 
     @Override

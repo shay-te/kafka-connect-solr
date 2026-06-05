@@ -73,6 +73,25 @@ class CollectionResolverTest {
     }
 
     @Test
+    void lowercaseStrategyIsAcceptedLocaleIndependent() {
+        // Strategy parse uses Locale.ROOT — "static" must work the same in any JVM locale.
+        CollectionResolver r = new CollectionResolver(config("static", "users"));
+        assertThat(r.resolve("anything")).isEqualTo("users");
+    }
+
+    @Test
+    void lastSeenCacheReturnsSameStringForRepeatedTopic() {
+        // Two distinct topics interleaved — the last-seen cache should not mix them up.
+        CollectionResolver r = new CollectionResolver(config("TOPIC", null));
+        String a = r.resolve("topic-a");
+        String b = r.resolve("topic-b");
+        String aAgain = r.resolve("topic-a");
+        assertThat(a).isEqualTo("topic-a");
+        assertThat(b).isEqualTo("topic-b");
+        assertThat(aAgain).isSameAs(a);
+    }
+
+    @Test
     void resolveIsMemoised() {
         // Same topic returned String must be cached (same identity) so the
         // hot path is a single ConcurrentHashMap lookup, no regex match.

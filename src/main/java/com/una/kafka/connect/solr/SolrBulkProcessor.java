@@ -3,6 +3,8 @@ package com.una.kafka.connect.solr;
 import org.apache.kafka.connect.errors.RetriableException;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.impl.ConcurrentUpdateHttp2SolrClient;
+import org.apache.solr.client.solrj.impl.NoOpResponseParser;
+import org.apache.solr.client.solrj.ResponseParser;
 import org.apache.solr.client.solrj.request.UpdateRequest;
 import org.apache.solr.common.SolrInputDocument;
 import org.apache.solr.common.SolrInputField;
@@ -28,6 +30,7 @@ import java.util.concurrent.atomic.LongAdder;
 public final class SolrBulkProcessor implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(SolrBulkProcessor.class);
+    private static final ResponseParser NO_OP_PARSER = new NoOpResponseParser("javabin");
 
     private final SolrClient client;
     private final ExecutorService executor;
@@ -64,7 +67,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
     private final LongAdder solrCallLatencyNanos = new LongAdder();
     private final LongAdder solrCallCount = new LongAdder();
 
-    public SolrBulkProcessor(SolrClient client, SolrSinkConfig config, SolrSchemaManager schemaManager) {
+    public SolrBulkProcessor(SolrClient client, SolrSinkConfig config) {
         this.client = client;
         this.batchSize = config.batchSize();
         this.lingerNanos = TimeUnit.MILLISECONDS.toNanos(config.lingerMs());
@@ -236,6 +239,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
             try {
                 return RetryUtil.retry(() -> {
                     UpdateRequest req = new UpdateRequest();
+                    req.setResponseParser(NO_OP_PARSER);
                     req.add(docs);
                     if (commitWithinMs > 0) {
                         req.setCommitWithin(commitWithinMs);
@@ -250,7 +254,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
                     lastSuccessEpochMs = System.currentTimeMillis();
                     return null;
                 }, maxRetries, retryBackoffMs,
-                        "Solr upsert(" + collection + ", " + size + " docs)",
+                        () -> "Solr upsert(" + collection + ", " + size + " docs)",
                         totalRetries);
             } catch (RuntimeException e) {
                 recordsFailed.add(size);
@@ -278,6 +282,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
             try {
                 return RetryUtil.retry(() -> {
                     UpdateRequest req = new UpdateRequest();
+                    req.setResponseParser(NO_OP_PARSER);
                     req.deleteById(ids);
                     if (commitWithinMs > 0) {
                         req.setCommitWithin(commitWithinMs);
@@ -292,7 +297,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
                     lastSuccessEpochMs = System.currentTimeMillis();
                     return null;
                 }, maxRetries, retryBackoffMs,
-                        "Solr delete(" + collection + ", " + size + " ids)",
+                        () -> "Solr delete(" + collection + ", " + size + " ids)",
                         totalRetries);
             } catch (RuntimeException e) {
                 recordsFailed.add(size);

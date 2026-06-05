@@ -1,8 +1,10 @@
 package com.una.kafka.connect.solr;
 
+import org.apache.kafka.connect.data.Date;
 import org.apache.kafka.connect.data.Decimal;
 import org.apache.kafka.connect.data.Field;
 import org.apache.kafka.connect.data.Schema;
+import org.apache.kafka.connect.data.Time;
 import org.apache.kafka.connect.data.Timestamp;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.request.schema.SchemaRequest;
@@ -22,14 +24,12 @@ public final class SolrSchemaManager {
     private static final Logger log = LoggerFactory.getLogger(SolrSchemaManager.class);
 
     private final SolrClient client;
-    private final SolrSinkConfig config;
     private final boolean autoEvolve;
     private final Map<String, Set<String>> knownFieldsPerCollection = new HashMap<>();
     private final Map<String, Set<Schema>> evolvedSchemasPerCollection = new HashMap<>();
 
     public SolrSchemaManager(SolrClient client, SolrSinkConfig config) {
         this.client = client;
-        this.config = config;
         this.autoEvolve = config.schemaAutoEvolve();
     }
 
@@ -111,8 +111,8 @@ public final class SolrSchemaManager {
         if (schema.name() != null) {
             switch (schema.name()) {
                 case Timestamp.LOGICAL_NAME:
-                case "org.apache.kafka.connect.data.Date":
-                case "org.apache.kafka.connect.data.Time":
+                case Date.LOGICAL_NAME:
+                case Time.LOGICAL_NAME:
                     return "pdate";
                 case Decimal.LOGICAL_NAME:
                     return "string";

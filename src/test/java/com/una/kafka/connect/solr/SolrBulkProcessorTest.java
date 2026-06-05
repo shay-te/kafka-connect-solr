@@ -46,7 +46,7 @@ class SolrBulkProcessorTest {
     @Test
     void batchTriggersWhenFull() throws Exception {
         SolrClient client = mock(SolrClient.class);
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()));
 
         bulk.upsert("c", doc("1"), null);
         bulk.upsert("c", doc("2"), null);
@@ -60,7 +60,7 @@ class SolrBulkProcessorTest {
     @Test
     void deletesAreShipped() throws Exception {
         SolrClient client = mock(SolrClient.class);
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()));
 
         bulk.delete("c", "1", null);
         bulk.delete("c", "2", null);
@@ -83,7 +83,7 @@ class SolrBulkProcessorTest {
 
         Map<String, String> overrides = new HashMap<>();
         overrides.put(SolrSinkConfig.MAX_RETRIES_CONFIG, "3");
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(overrides), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(overrides));
         bulk.upsert("c", doc("1"), null);
         bulk.upsert("c", doc("2"), null);
         bulk.flushSync();
@@ -98,7 +98,7 @@ class SolrBulkProcessorTest {
         when(client.request(any(UpdateRequest.class), anyString()))
                 .thenThrow(new BaseHttpSolrClient.RemoteSolrException("u", 400, "bad", null));
 
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()));
         bulk.upsert("c", doc("1"), null);
         bulk.upsert("c", doc("2"), null);
 
@@ -109,7 +109,7 @@ class SolrBulkProcessorTest {
     @Test
     void closeFlushesAndShutsDown() throws Exception {
         SolrClient client = mock(SolrClient.class);
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()));
         bulk.upsert("c", doc("1"), null);
         bulk.close();
     }
@@ -117,7 +117,7 @@ class SolrBulkProcessorTest {
     @Test
     void metricsExposed() {
         SolrClient client = mock(SolrClient.class);
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()));
         assertThat(bulk.recordsWritten()).isZero();
         assertThat(bulk.recordsFailed()).isZero();
         assertThat(bulk.retries()).isZero();
@@ -131,7 +131,7 @@ class SolrBulkProcessorTest {
         overrides.put(SolrSinkConfig.LINGER_MS_CONFIG, "0");
         overrides.put(SolrSinkConfig.BATCH_SIZE_CONFIG, "1000");
         SolrClient client = mock(SolrClient.class);
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(overrides), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(overrides));
 
         bulk.upsert("c", doc("1"), null);
         bulk.flushSync();
@@ -146,7 +146,7 @@ class SolrBulkProcessorTest {
         overrides.put(SolrSinkConfig.BULK_SIZE_BYTES_CONFIG, "200");
         overrides.put(SolrSinkConfig.LINGER_MS_CONFIG, "100000");
         SolrClient client = mock(SolrClient.class);
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(overrides), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(overrides));
         SolrInputDocument big = new SolrInputDocument();
         big.addField("id", "1");
         big.addField("payload", "x".repeat(500));
@@ -159,7 +159,7 @@ class SolrBulkProcessorTest {
     @Test
     void latencyMetricsAreTracked() throws Exception {
         SolrClient client = mock(SolrClient.class);
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()));
         // Idle: nothing recorded yet.
         assertThat(bulk.avgBatchLatencyMs()).isEqualTo(0.0);
         assertThat(bulk.avgSolrCallLatencyMs()).isEqualTo(0.0);
@@ -179,7 +179,7 @@ class SolrBulkProcessorTest {
     @Test
     void offsetStateIsMarkedAcked() throws Exception {
         SolrClient client = mock(SolrClient.class);
-        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()));
         OffsetState s1 = new OffsetState(new org.apache.kafka.common.TopicPartition("t", 0), 7L);
         OffsetState s2 = new OffsetState(new org.apache.kafka.common.TopicPartition("t", 0), 8L);
         bulk.upsert("c", doc("1"), s1);
