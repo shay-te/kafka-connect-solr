@@ -6,17 +6,27 @@ import org.apache.kafka.common.config.ConfigDef.Importance;
 import org.apache.kafka.common.config.ConfigDef.Type;
 import org.apache.kafka.common.config.ConfigDef.Width;
 
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
- * Connector + task configuration. Names mirror the Confluent
- * kafka-connect-elasticsearch connector wherever possible so that
- * operators can move a sink config over with minimal change.
+ * Connector + task configuration. Mirrors every key from the Confluent
+ * kafka-connect-elasticsearch connector that has a Solr analogue, plus a
+ * few Solr-native extras (zk.host, collection naming, atomic updates,
+ * SolrCloud auto-create with shards/replicas, zstd compression).
+ *
+ * <p>Where ES has a config that has no Solr analogue (data streams) the key
+ * is intentionally absent. Where Solr does the same job differently
+ * (commitWithin instead of refresh_interval) the new key is documented
+ * here.</p>
  */
 public class SolrSinkConfig extends AbstractConfig {
 
+    // -- Connection --
     public static final String SOLR_URL_CONFIG = "solr.url";
     public static final String SOLR_ZK_HOST_CONFIG = "solr.zk.host";
     public static final String SOLR_COLLECTION_CONFIG = "solr.collection";
@@ -24,28 +34,73 @@ public class SolrSinkConfig extends AbstractConfig {
     public static final String CONNECTION_PASSWORD_CONFIG = "connection.password";
     public static final String CONNECTION_TIMEOUT_MS_CONFIG = "connection.timeout.ms";
     public static final String READ_TIMEOUT_MS_CONFIG = "read.timeout.ms";
+    public static final String CONNECTION_COMPRESSION_CONFIG = "connection.compression";
+    public static final String CONNECTION_COMPRESSION_ALGORITHM_CONFIG = "connection.compression.algorithm";
+    public static final String MAX_CONNECTION_IDLE_TIME_MS_CONFIG = "max.connection.idle.time.ms";
 
+    // -- Proxy --
+    public static final String PROXY_HOST_CONFIG = "proxy.host";
+    public static final String PROXY_PORT_CONFIG = "proxy.port";
+    public static final String PROXY_USERNAME_CONFIG = "proxy.username";
+    public static final String PROXY_PASSWORD_CONFIG = "proxy.password";
+
+    // -- SSL / TLS --
+    public static final String SECURITY_PROTOCOL_CONFIG = "solr.security.protocol";
+    public static final String SSL_KEYSTORE_LOCATION_CONFIG = "ssl.keystore.location";
+    public static final String SSL_KEYSTORE_PASSWORD_CONFIG = "ssl.keystore.password";
+    public static final String SSL_KEYSTORE_TYPE_CONFIG = "ssl.keystore.type";
+    public static final String SSL_KEY_PASSWORD_CONFIG = "ssl.key.password";
+    public static final String SSL_TRUSTSTORE_LOCATION_CONFIG = "ssl.truststore.location";
+    public static final String SSL_TRUSTSTORE_PASSWORD_CONFIG = "ssl.truststore.password";
+    public static final String SSL_TRUSTSTORE_TYPE_CONFIG = "ssl.truststore.type";
+    public static final String SSL_PROTOCOL_CONFIG = "ssl.protocol";
+    public static final String SSL_ENABLED_PROTOCOLS_CONFIG = "ssl.enabled.protocols";
+    public static final String SSL_CIPHER_SUITES_CONFIG = "ssl.cipher.suites";
+    public static final String SSL_ENDPOINT_VERIFICATION_CONFIG = "ssl.endpoint.identification.algorithm";
+
+    // -- Kerberos --
+    public static final String KERBEROS_PRINCIPAL_CONFIG = "kerberos.user.principal";
+    public static final String KERBEROS_KEYTAB_PATH_CONFIG = "kerberos.keytab.path";
+    public static final String KERBEROS_TICKET_RENEW_WINDOW_FACTOR_CONFIG = "kerberos.ticket.renew.window.factor";
+
+    // -- Behaviour --
     public static final String KEY_IGNORE_CONFIG = "key.ignore";
     public static final String SCHEMA_IGNORE_CONFIG = "schema.ignore";
+    public static final String TOPIC_KEY_IGNORE_CONFIG = "topic.key.ignore";
+    public static final String TOPIC_SCHEMA_IGNORE_CONFIG = "topic.schema.ignore";
+    public static final String COMPACT_MAP_ENTRIES_CONFIG = "compact.map.entries";
+    public static final String DROP_INVALID_MESSAGE_CONFIG = "drop.invalid.message";
     public static final String BEHAVIOR_ON_NULL_VALUES_CONFIG = "behavior.on.null.values";
     public static final String BEHAVIOR_ON_MALFORMED_DOCS_CONFIG = "behavior.on.malformed.documents";
 
+    // -- Batching / throughput --
     public static final String BATCH_SIZE_CONFIG = "batch.size";
+    public static final String BULK_SIZE_BYTES_CONFIG = "bulk.size.bytes";
     public static final String LINGER_MS_CONFIG = "linger.ms";
     public static final String FLUSH_TIMEOUT_MS_CONFIG = "flush.timeout.ms";
+    public static final String FLUSH_SYNCHRONOUSLY_CONFIG = "flush.synchronously";
     public static final String MAX_IN_FLIGHT_REQUESTS_CONFIG = "max.in.flight.requests";
     public static final String MAX_BUFFERED_RECORDS_CONFIG = "max.buffered.records";
     public static final String MAX_RETRIES_CONFIG = "max.retries";
     public static final String RETRY_BACKOFF_MS_CONFIG = "retry.backoff.ms";
 
+    // -- Write strategy --
     public static final String WRITE_METHOD_CONFIG = "write.method";
     public static final String ID_STRATEGY_CONFIG = "id.strategy";
     public static final String ID_FIELD_CONFIG = "id.field";
+    public static final String USE_AUTOGENERATED_IDS_CONFIG = "use.autogenerated.ids";
+    public static final String EXTERNAL_VERSION_HEADER_CONFIG = "external.version.header";
     public static final String COLLECTION_NAMING_STRATEGY_CONFIG = "collection.naming.strategy";
 
+    // -- Schema management --
     public static final String SCHEMA_AUTO_CREATE_CONFIG = "schema.auto.create";
     public static final String SCHEMA_AUTO_EVOLVE_CONFIG = "schema.auto.evolve";
+    public static final String AUTO_CREATE_SHARDS_CONFIG = "auto.create.shards";
+    public static final String AUTO_CREATE_REPLICATION_FACTOR_CONFIG = "auto.create.replication.factor";
+    public static final String AUTO_CREATE_CONFIGSET_CONFIG = "auto.create.configset";
+    public static final String EXTERNAL_RESOURCE_USAGE_CONFIG = "external.resource.usage";
 
+    // -- Commit --
     public static final String COMMIT_WITHIN_MS_CONFIG = "commit.within.ms";
 
     public enum BehaviorOnNullValues {
@@ -68,98 +123,247 @@ public class SolrSinkConfig extends AbstractConfig {
         public static BehaviorOnMalformed parse(String s) { return valueOf(s.toUpperCase(Locale.ROOT)); }
     }
 
+    public enum SecurityProtocol {
+        PLAINTEXT, SSL;
+        public static SecurityProtocol parse(String s) { return valueOf(s.toUpperCase(Locale.ROOT)); }
+    }
+
+    public enum ExternalResourceUsage {
+        UNUSED, REQUIRED, AUTO;
+        public static ExternalResourceUsage parse(String s) { return valueOf(s.toUpperCase(Locale.ROOT)); }
+    }
+
+    public enum CompressionAlgorithm {
+        NONE, GZIP, ZSTD;
+        public static CompressionAlgorithm parse(String s) { return valueOf(s.toUpperCase(Locale.ROOT)); }
+    }
+
     public static ConfigDef config() {
         ConfigDef def = new ConfigDef();
-        String connectionGroup = "Connector";
-        int order = 0;
+        String g;
+        int order;
 
+        // -- Connection group --
+        g = "Connector";
+        order = 0;
         def.define(SOLR_URL_CONFIG, Type.LIST, "", Importance.HIGH,
-                "Comma-separated list of Solr base URLs, e.g. http://solr:8983/solr. "
-                        + "Either solr.url or solr.zk.host must be set.",
-                connectionGroup, ++order, Width.LONG, "Solr URL(s)");
+                "Comma-separated Solr base URLs (e.g. http://solr:8983/solr). One of solr.url or solr.zk.host is required.",
+                g, ++order, Width.LONG, "Solr URL(s)");
         def.define(SOLR_ZK_HOST_CONFIG, Type.STRING, "", Importance.HIGH,
-                "Zookeeper connection string for SolrCloud (zk1:2181,zk2:2181/solr). "
-                        + "Leave blank for standalone Solr.",
-                connectionGroup, ++order, Width.LONG, "Zookeeper host");
+                "Zookeeper connection string for SolrCloud (e.g. zk1:2181,zk2:2181/solr).",
+                g, ++order, Width.LONG, "Zookeeper host");
         def.define(SOLR_COLLECTION_CONFIG, Type.STRING, "", Importance.HIGH,
-                "Default Solr collection / core. Falls back to the topic name when empty.",
-                connectionGroup, ++order, Width.MEDIUM, "Collection");
+                "Default Solr collection / core. Falls back to topic name when empty.",
+                g, ++order, Width.MEDIUM, "Collection");
         def.define(CONNECTION_USERNAME_CONFIG, Type.STRING, "", Importance.MEDIUM,
-                "Username for basic auth (optional).",
-                connectionGroup, ++order, Width.MEDIUM, "Username");
+                "Basic-auth username (optional).",
+                g, ++order, Width.MEDIUM, "Username");
         def.define(CONNECTION_PASSWORD_CONFIG, Type.PASSWORD, "", Importance.MEDIUM,
-                "Password for basic auth (optional).",
-                connectionGroup, ++order, Width.MEDIUM, "Password");
+                "Basic-auth password (optional).",
+                g, ++order, Width.MEDIUM, "Password");
         def.define(CONNECTION_TIMEOUT_MS_CONFIG, Type.INT, 5_000, Importance.LOW,
                 "HTTP connect timeout in ms.",
-                connectionGroup, ++order, Width.SHORT, "Connect timeout");
+                g, ++order, Width.SHORT, "Connect timeout");
         def.define(READ_TIMEOUT_MS_CONFIG, Type.INT, 60_000, Importance.LOW,
                 "HTTP socket read timeout in ms.",
-                connectionGroup, ++order, Width.SHORT, "Read timeout");
+                g, ++order, Width.SHORT, "Read timeout");
+        def.define(MAX_CONNECTION_IDLE_TIME_MS_CONFIG, Type.LONG, 60_000L, Importance.LOW,
+                "Max time the underlying HTTP/2 client keeps an idle connection alive.",
+                g, ++order, Width.SHORT, "Max idle ms");
+        def.define(CONNECTION_COMPRESSION_CONFIG, Type.BOOLEAN, false, Importance.LOW,
+                "Enable response payload compression (Accept-Encoding header).",
+                g, ++order, Width.SHORT, "Compression");
+        def.define(CONNECTION_COMPRESSION_ALGORITHM_CONFIG, Type.STRING, "GZIP", Importance.LOW,
+                "Algorithm advertised when connection.compression=true. GZIP | ZSTD | NONE. "
+                        + "ZSTD requires Solr 9.1+; ES connector only supports GZIP.",
+                g, ++order, Width.SHORT, "Compression algorithm");
 
-        String behaviourGroup = "Behavior";
+        // -- Proxy --
+        g = "Proxy";
+        order = 0;
+        def.define(PROXY_HOST_CONFIG, Type.STRING, "", Importance.LOW,
+                "HTTP proxy host. Leave empty for no proxy.",
+                g, ++order, Width.MEDIUM, "Proxy host");
+        def.define(PROXY_PORT_CONFIG, Type.INT, 0, Importance.LOW,
+                "HTTP proxy port. 0 disables.",
+                g, ++order, Width.SHORT, "Proxy port");
+        def.define(PROXY_USERNAME_CONFIG, Type.STRING, "", Importance.LOW,
+                "HTTP proxy basic-auth username.",
+                g, ++order, Width.SHORT, "Proxy user");
+        def.define(PROXY_PASSWORD_CONFIG, Type.PASSWORD, "", Importance.LOW,
+                "HTTP proxy basic-auth password.",
+                g, ++order, Width.SHORT, "Proxy pass");
+
+        // -- SSL --
+        g = "Security";
+        order = 0;
+        def.define(SECURITY_PROTOCOL_CONFIG, Type.STRING, "PLAINTEXT", Importance.MEDIUM,
+                "PLAINTEXT or SSL.",
+                g, ++order, Width.SHORT, "Security protocol");
+        def.define(SSL_KEYSTORE_LOCATION_CONFIG, Type.STRING, "", Importance.MEDIUM,
+                "Path to the client keystore (mTLS).",
+                g, ++order, Width.LONG, "Keystore path");
+        def.define(SSL_KEYSTORE_PASSWORD_CONFIG, Type.PASSWORD, "", Importance.MEDIUM,
+                "Keystore password.",
+                g, ++order, Width.MEDIUM, "Keystore pass");
+        def.define(SSL_KEYSTORE_TYPE_CONFIG, Type.STRING, "JKS", Importance.LOW,
+                "JKS, PKCS12 or BCFKS.",
+                g, ++order, Width.SHORT, "Keystore type");
+        def.define(SSL_KEY_PASSWORD_CONFIG, Type.PASSWORD, "", Importance.LOW,
+                "Optional per-key password if different from the keystore password.",
+                g, ++order, Width.SHORT, "Key pass");
+        def.define(SSL_TRUSTSTORE_LOCATION_CONFIG, Type.STRING, "", Importance.MEDIUM,
+                "Path to the truststore.",
+                g, ++order, Width.LONG, "Truststore path");
+        def.define(SSL_TRUSTSTORE_PASSWORD_CONFIG, Type.PASSWORD, "", Importance.MEDIUM,
+                "Truststore password.",
+                g, ++order, Width.MEDIUM, "Truststore pass");
+        def.define(SSL_TRUSTSTORE_TYPE_CONFIG, Type.STRING, "JKS", Importance.LOW,
+                "JKS, PKCS12 or BCFKS.",
+                g, ++order, Width.SHORT, "Truststore type");
+        def.define(SSL_PROTOCOL_CONFIG, Type.STRING, "TLSv1.3", Importance.LOW,
+                "Default SSL protocol. TLSv1.3 by default (ES connector defaults to TLSv1.2).",
+                g, ++order, Width.SHORT, "TLS protocol");
+        def.define(SSL_ENABLED_PROTOCOLS_CONFIG, Type.LIST, "TLSv1.3,TLSv1.2", Importance.LOW,
+                "Enabled protocol list.",
+                g, ++order, Width.MEDIUM, "Enabled protocols");
+        def.define(SSL_CIPHER_SUITES_CONFIG, Type.LIST, "", Importance.LOW,
+                "Optional explicit cipher-suite list. Empty = JVM defaults (recommended).",
+                g, ++order, Width.LONG, "Cipher suites");
+        def.define(SSL_ENDPOINT_VERIFICATION_CONFIG, Type.STRING, "HTTPS", Importance.LOW,
+                "Hostname verification (HTTPS) or '' to disable.",
+                g, ++order, Width.SHORT, "Endpoint id alg");
+
+        // -- Kerberos --
+        g = "Kerberos";
+        order = 0;
+        def.define(KERBEROS_PRINCIPAL_CONFIG, Type.STRING, "", Importance.LOW,
+                "Kerberos principal. Enables SPNEGO over HTTP/2 when set.",
+                g, ++order, Width.MEDIUM, "Kerberos principal");
+        def.define(KERBEROS_KEYTAB_PATH_CONFIG, Type.STRING, "", Importance.LOW,
+                "Path to the keytab.",
+                g, ++order, Width.LONG, "Keytab path");
+        def.define(KERBEROS_TICKET_RENEW_WINDOW_FACTOR_CONFIG, Type.DOUBLE, 0.8, Importance.LOW,
+                "Fraction of TGT lifetime to elapse before renew. ES connector has no auto-renew - "
+                        + "we renew automatically.",
+                g, ++order, Width.SHORT, "TGT renew factor");
+
+        // -- Behaviour --
+        g = "Behavior";
         order = 0;
         def.define(KEY_IGNORE_CONFIG, Type.BOOLEAN, false, Importance.HIGH,
-                "If true the connector ignores the record key when generating the document id.",
-                behaviourGroup, ++order, Width.SHORT, "Ignore key");
+                "If true the connector ignores the record key when generating the doc id.",
+                g, ++order, Width.SHORT, "Ignore key");
         def.define(SCHEMA_IGNORE_CONFIG, Type.BOOLEAN, false, Importance.MEDIUM,
-                "If true the connector skips schema introspection.",
-                behaviourGroup, ++order, Width.SHORT, "Ignore schema");
+                "If true skip schema introspection.",
+                g, ++order, Width.SHORT, "Ignore schema");
+        def.define(TOPIC_KEY_IGNORE_CONFIG, Type.LIST, "", Importance.LOW,
+                "Comma-separated topic names where key.ignore is forced true.",
+                g, ++order, Width.LONG, "Per-topic ignore key");
+        def.define(TOPIC_SCHEMA_IGNORE_CONFIG, Type.LIST, "", Importance.LOW,
+                "Comma-separated topic names where schema.ignore is forced true.",
+                g, ++order, Width.LONG, "Per-topic ignore schema");
+        def.define(COMPACT_MAP_ENTRIES_CONFIG, Type.BOOLEAN, true, Importance.LOW,
+                "ES compat. true = dotted-path flatten (Solr-native, faster). "
+                        + "false = ES-style array of {key,value} structs.",
+                g, ++order, Width.SHORT, "Compact maps");
+        def.define(DROP_INVALID_MESSAGE_CONFIG, Type.BOOLEAN, false, Importance.LOW,
+                "Alias for behavior.on.malformed.documents=ignore (matches ES connector).",
+                g, ++order, Width.SHORT, "Drop invalid");
         def.define(BEHAVIOR_ON_NULL_VALUES_CONFIG, Type.STRING, "ignore", Importance.LOW,
                 "Tombstones: ignore | delete | fail.",
-                behaviourGroup, ++order, Width.MEDIUM, "Null value behavior");
+                g, ++order, Width.MEDIUM, "Null value behavior");
         def.define(BEHAVIOR_ON_MALFORMED_DOCS_CONFIG, Type.STRING, "fail", Importance.LOW,
-                "Malformed records: ignore | warn | fail.",
-                behaviourGroup, ++order, Width.MEDIUM, "Malformed behavior");
+                "Malformed: ignore | warn | fail.",
+                g, ++order, Width.MEDIUM, "Malformed behavior");
 
-        String throughputGroup = "Throughput";
+        // -- Throughput --
+        g = "Throughput";
         order = 0;
         def.define(BATCH_SIZE_CONFIG, Type.INT, 2000, Importance.HIGH,
                 "Records per Solr bulk update.",
-                throughputGroup, ++order, Width.SHORT, "Batch size");
+                g, ++order, Width.SHORT, "Batch size");
+        def.define(BULK_SIZE_BYTES_CONFIG, Type.LONG, 5L * 1024L * 1024L, Importance.MEDIUM,
+                "Byte size cap per bulk request. Whichever of batch.size or bulk.size.bytes hits first triggers a flush. "
+                        + "Set 0 to disable byte-size capping.",
+                g, ++order, Width.SHORT, "Bulk size bytes");
         def.define(LINGER_MS_CONFIG, Type.LONG, 50L, Importance.MEDIUM,
-                "Max milliseconds to wait while filling a batch before sending.",
-                throughputGroup, ++order, Width.SHORT, "Linger ms");
+                "Max ms to wait while filling a batch before sending.",
+                g, ++order, Width.SHORT, "Linger ms");
         def.define(FLUSH_TIMEOUT_MS_CONFIG, Type.LONG, 30_000L, Importance.MEDIUM,
-                "Max milliseconds to wait when flushing in-flight requests.",
-                throughputGroup, ++order, Width.SHORT, "Flush timeout");
+                "Max ms to wait when flushing in-flight requests.",
+                g, ++order, Width.SHORT, "Flush timeout");
+        def.define(FLUSH_SYNCHRONOUSLY_CONFIG, Type.BOOLEAN, true, Importance.MEDIUM,
+                "true = preCommit waits for all in-flight writes (default, safest). "
+                        + "false = preCommit returns offsets only for writes whose ack arrived; "
+                        + "much higher throughput when Solr is slow.",
+                g, ++order, Width.SHORT, "Flush synchronously");
         def.define(MAX_IN_FLIGHT_REQUESTS_CONFIG, Type.INT, 8, Importance.MEDIUM,
-                "Concurrent Solr requests per task. Higher than the ES connector default (5) "
-                        + "for higher throughput.",
-                throughputGroup, ++order, Width.SHORT, "Max in-flight requests");
+                "Concurrent Solr requests per task. ES connector default is 5; we default higher because HTTP/2 multiplexes.",
+                g, ++order, Width.SHORT, "Max in-flight");
         def.define(MAX_BUFFERED_RECORDS_CONFIG, Type.INT, 20_000, Importance.MEDIUM,
-                "Maximum records buffered across all in-flight batches before back-pressure.",
-                throughputGroup, ++order, Width.SHORT, "Max buffered records");
+                "Maximum buffered records across all in-flight batches.",
+                g, ++order, Width.SHORT, "Max buffered");
         def.define(MAX_RETRIES_CONFIG, Type.INT, 5, Importance.MEDIUM,
-                "Maximum retry attempts on retryable Solr failures.",
-                throughputGroup, ++order, Width.SHORT, "Max retries");
+                "Maximum retry attempts on retryable failures.",
+                g, ++order, Width.SHORT, "Max retries");
         def.define(RETRY_BACKOFF_MS_CONFIG, Type.LONG, 200L, Importance.LOW,
-                "Initial backoff between retries; doubles per attempt up to 30s.",
-                throughputGroup, ++order, Width.SHORT, "Retry backoff");
+                "Initial backoff, doubles up to 30s.",
+                g, ++order, Width.SHORT, "Retry backoff");
 
-        String writeGroup = "Write";
+        // -- Write --
+        g = "Write";
         order = 0;
         def.define(WRITE_METHOD_CONFIG, Type.STRING, "INDEX", Importance.MEDIUM,
-                "INDEX (full doc) | UPSERT (set semantics) | ATOMIC_UPDATE (per-field set/add/inc).",
-                writeGroup, ++order, Width.MEDIUM, "Write method");
+                "INDEX | UPSERT | ATOMIC_UPDATE. ES doesn't support ATOMIC_UPDATE.",
+                g, ++order, Width.MEDIUM, "Write method");
         def.define(ID_STRATEGY_CONFIG, Type.STRING, "KAFKA_KEY", Importance.MEDIUM,
                 "KAFKA_KEY | RECORD_FIELD | TOPIC_PARTITION_OFFSET | UUID.",
-                writeGroup, ++order, Width.MEDIUM, "Id strategy");
+                g, ++order, Width.MEDIUM, "Id strategy");
         def.define(ID_FIELD_CONFIG, Type.STRING, "id", Importance.LOW,
-                "When id.strategy=RECORD_FIELD, the field path (dot-paths supported).",
-                writeGroup, ++order, Width.MEDIUM, "Id field");
+                "Field path used when id.strategy=RECORD_FIELD.",
+                g, ++order, Width.MEDIUM, "Id field");
+        def.define(USE_AUTOGENERATED_IDS_CONFIG, Type.BOOLEAN, false, Importance.LOW,
+                "ES compat alias - true == id.strategy=UUID.",
+                g, ++order, Width.SHORT, "Autogen ids");
+        def.define(EXTERNAL_VERSION_HEADER_CONFIG, Type.STRING, "", Importance.LOW,
+                "Name of a Kafka record header carrying the document version. Empty disables external versioning. "
+                        + "When set, the value is written as Solr's _version_ field for optimistic concurrency. "
+                        + "Better than ES connector: we accept any header type (string/long/bytes).",
+                g, ++order, Width.MEDIUM, "External version header");
         def.define(COLLECTION_NAMING_STRATEGY_CONFIG, Type.STRING, "TOPIC", Importance.LOW,
-                "TOPIC | STATIC | TOPIC_REGEX (solr.collection takes 'pattern=>replacement').",
-                writeGroup, ++order, Width.LONG, "Collection naming");
+                "TOPIC | STATIC | TOPIC_REGEX (pattern=>replacement).",
+                g, ++order, Width.LONG, "Collection naming");
+
+        // -- Schema management --
+        g = "Schema";
+        order = 0;
         def.define(SCHEMA_AUTO_CREATE_CONFIG, Type.BOOLEAN, false, Importance.LOW,
-                "If true, attempt to create the target collection on SolrCloud.",
-                writeGroup, ++order, Width.SHORT, "Auto create");
+                "Auto-create the target collection (SolrCloud).",
+                g, ++order, Width.SHORT, "Auto create");
+        def.define(AUTO_CREATE_SHARDS_CONFIG, Type.INT, 1, Importance.LOW,
+                "numShards when auto-creating a collection.",
+                g, ++order, Width.SHORT, "Auto shards");
+        def.define(AUTO_CREATE_REPLICATION_FACTOR_CONFIG, Type.INT, 1, Importance.LOW,
+                "replicationFactor when auto-creating a collection.",
+                g, ++order, Width.SHORT, "Auto replicas");
+        def.define(AUTO_CREATE_CONFIGSET_CONFIG, Type.STRING, "_default", Importance.LOW,
+                "configset name to use when auto-creating.",
+                g, ++order, Width.MEDIUM, "Configset");
         def.define(SCHEMA_AUTO_EVOLVE_CONFIG, Type.BOOLEAN, false, Importance.LOW,
-                "If true the connector adds new fields to the managed schema.",
-                writeGroup, ++order, Width.SHORT, "Auto evolve");
+                "Auto-add new fields to the managed schema.",
+                g, ++order, Width.SHORT, "Auto evolve");
+        def.define(EXTERNAL_RESOURCE_USAGE_CONFIG, Type.STRING, "AUTO", Importance.LOW,
+                "UNUSED (no check) | REQUIRED (fail if missing) | AUTO (create if missing and "
+                        + "schema.auto.create=true, else fail). ES has the same key with the same semantics.",
+                g, ++order, Width.SHORT, "Resource usage");
+
+        // -- Commit --
+        g = "Commit";
+        order = 0;
         def.define(COMMIT_WITHIN_MS_CONFIG, Type.LONG, 1_000L, Importance.LOW,
-                "Solr commitWithin sent with every bulk request. 0 disables soft commits.",
-                writeGroup, ++order, Width.SHORT, "commitWithin");
+                "Solr commitWithin sent with every batch.",
+                g, ++order, Width.SHORT, "commitWithin");
 
         return def;
     }
@@ -177,27 +381,98 @@ public class SolrSinkConfig extends AbstractConfig {
     }
     public int connectionTimeoutMs() { return getInt(CONNECTION_TIMEOUT_MS_CONFIG); }
     public int readTimeoutMs() { return getInt(READ_TIMEOUT_MS_CONFIG); }
+    public long maxConnectionIdleMs() { return getLong(MAX_CONNECTION_IDLE_TIME_MS_CONFIG); }
+    public boolean connectionCompression() { return getBoolean(CONNECTION_COMPRESSION_CONFIG); }
+    public CompressionAlgorithm compressionAlgorithm() {
+        return CompressionAlgorithm.parse(getString(CONNECTION_COMPRESSION_ALGORITHM_CONFIG));
+    }
+
+    public String proxyHost() { return getString(PROXY_HOST_CONFIG); }
+    public int proxyPort() { return getInt(PROXY_PORT_CONFIG); }
+    public String proxyUsername() { return getString(PROXY_USERNAME_CONFIG); }
+    public String proxyPassword() {
+        return getPassword(PROXY_PASSWORD_CONFIG) == null ? "" : getPassword(PROXY_PASSWORD_CONFIG).value();
+    }
+    public boolean proxyEnabled() { return proxyHost() != null && !proxyHost().isEmpty() && proxyPort() > 0; }
+
+    public SecurityProtocol securityProtocol() { return SecurityProtocol.parse(getString(SECURITY_PROTOCOL_CONFIG)); }
+    public boolean sslEnabled() { return securityProtocol() == SecurityProtocol.SSL; }
+    public String sslKeystoreLocation() { return getString(SSL_KEYSTORE_LOCATION_CONFIG); }
+    public String sslKeystorePassword() {
+        return getPassword(SSL_KEYSTORE_PASSWORD_CONFIG) == null ? "" : getPassword(SSL_KEYSTORE_PASSWORD_CONFIG).value();
+    }
+    public String sslKeystoreType() { return getString(SSL_KEYSTORE_TYPE_CONFIG); }
+    public String sslKeyPassword() {
+        return getPassword(SSL_KEY_PASSWORD_CONFIG) == null ? "" : getPassword(SSL_KEY_PASSWORD_CONFIG).value();
+    }
+    public String sslTruststoreLocation() { return getString(SSL_TRUSTSTORE_LOCATION_CONFIG); }
+    public String sslTruststorePassword() {
+        return getPassword(SSL_TRUSTSTORE_PASSWORD_CONFIG) == null ? "" : getPassword(SSL_TRUSTSTORE_PASSWORD_CONFIG).value();
+    }
+    public String sslTruststoreType() { return getString(SSL_TRUSTSTORE_TYPE_CONFIG); }
+    public String sslProtocol() { return getString(SSL_PROTOCOL_CONFIG); }
+    public List<String> sslEnabledProtocols() { return getList(SSL_ENABLED_PROTOCOLS_CONFIG); }
+    public List<String> sslCipherSuites() { return getList(SSL_CIPHER_SUITES_CONFIG); }
+    public String sslEndpointIdentificationAlgorithm() { return getString(SSL_ENDPOINT_VERIFICATION_CONFIG); }
+
+    public String kerberosPrincipal() { return getString(KERBEROS_PRINCIPAL_CONFIG); }
+    public String kerberosKeytabPath() { return getString(KERBEROS_KEYTAB_PATH_CONFIG); }
+    public double kerberosRenewWindowFactor() { return getDouble(KERBEROS_TICKET_RENEW_WINDOW_FACTOR_CONFIG); }
+    public boolean kerberosEnabled() {
+        return kerberosPrincipal() != null && !kerberosPrincipal().isEmpty()
+                && kerberosKeytabPath() != null && !kerberosKeytabPath().isEmpty();
+    }
 
     public boolean keyIgnore() { return getBoolean(KEY_IGNORE_CONFIG); }
     public boolean schemaIgnore() { return getBoolean(SCHEMA_IGNORE_CONFIG); }
+    public Set<String> topicKeyIgnoreSet() {
+        return Collections.unmodifiableSet(new HashSet<>(getList(TOPIC_KEY_IGNORE_CONFIG)));
+    }
+    public Set<String> topicSchemaIgnoreSet() {
+        return Collections.unmodifiableSet(new HashSet<>(getList(TOPIC_SCHEMA_IGNORE_CONFIG)));
+    }
+    public boolean compactMapEntries() { return getBoolean(COMPACT_MAP_ENTRIES_CONFIG); }
+    public boolean dropInvalidMessage() { return getBoolean(DROP_INVALID_MESSAGE_CONFIG); }
+
     public BehaviorOnNullValues behaviorOnNullValues() { return BehaviorOnNullValues.parse(getString(BEHAVIOR_ON_NULL_VALUES_CONFIG)); }
-    public BehaviorOnMalformed behaviorOnMalformed() { return BehaviorOnMalformed.parse(getString(BEHAVIOR_ON_MALFORMED_DOCS_CONFIG)); }
+    public BehaviorOnMalformed behaviorOnMalformed() {
+        return dropInvalidMessage() ? BehaviorOnMalformed.IGNORE
+                : BehaviorOnMalformed.parse(getString(BEHAVIOR_ON_MALFORMED_DOCS_CONFIG));
+    }
 
     public int batchSize() { return getInt(BATCH_SIZE_CONFIG); }
+    public long bulkSizeBytes() { return getLong(BULK_SIZE_BYTES_CONFIG); }
     public long lingerMs() { return getLong(LINGER_MS_CONFIG); }
     public long flushTimeoutMs() { return getLong(FLUSH_TIMEOUT_MS_CONFIG); }
+    public boolean flushSynchronously() { return getBoolean(FLUSH_SYNCHRONOUSLY_CONFIG); }
     public int maxInFlight() { return getInt(MAX_IN_FLIGHT_REQUESTS_CONFIG); }
     public int maxBufferedRecords() { return getInt(MAX_BUFFERED_RECORDS_CONFIG); }
     public int maxRetries() { return getInt(MAX_RETRIES_CONFIG); }
     public long retryBackoffMs() { return getLong(RETRY_BACKOFF_MS_CONFIG); }
 
     public WriteMethod writeMethod() { return WriteMethod.parse(getString(WRITE_METHOD_CONFIG)); }
-    public IdStrategy idStrategy() { return IdStrategy.parse(getString(ID_STRATEGY_CONFIG)); }
+    public IdStrategy idStrategy() {
+        if (useAutogeneratedIds()) return IdStrategy.UUID;
+        return IdStrategy.parse(getString(ID_STRATEGY_CONFIG));
+    }
     public String idField() { return getString(ID_FIELD_CONFIG); }
+    public boolean useAutogeneratedIds() { return getBoolean(USE_AUTOGENERATED_IDS_CONFIG); }
+    public String externalVersionHeader() { return getString(EXTERNAL_VERSION_HEADER_CONFIG); }
+    public boolean externalVersioningEnabled() {
+        String h = externalVersionHeader();
+        return h != null && !h.isEmpty();
+    }
     public String collectionNamingStrategy() { return getString(COLLECTION_NAMING_STRATEGY_CONFIG); }
 
     public boolean schemaAutoCreate() { return getBoolean(SCHEMA_AUTO_CREATE_CONFIG); }
+    public int autoCreateShards() { return getInt(AUTO_CREATE_SHARDS_CONFIG); }
+    public int autoCreateReplicationFactor() { return getInt(AUTO_CREATE_REPLICATION_FACTOR_CONFIG); }
+    public String autoCreateConfigset() { return getString(AUTO_CREATE_CONFIGSET_CONFIG); }
     public boolean schemaAutoEvolve() { return getBoolean(SCHEMA_AUTO_EVOLVE_CONFIG); }
+    public ExternalResourceUsage externalResourceUsage() {
+        return ExternalResourceUsage.parse(getString(EXTERNAL_RESOURCE_USAGE_CONFIG));
+    }
+
     public long commitWithinMs() { return getLong(COMMIT_WITHIN_MS_CONFIG); }
 
     public boolean isCloud() {

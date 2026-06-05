@@ -7,15 +7,25 @@ import org.apache.solr.client.solrj.impl.LBHttp2SolrClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.net.ssl.SSLContext;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Builds a single, reusable {@link SolrClient}. SolrJ's HTTP/2 client lets
- * the connector multiplex multiple in-flight requests over one connection,
- * which is why we can drive higher throughput than the Elasticsearch sink.
+ * Builds a single, reusable {@link SolrClient}. HTTP/2 multiplexing gives
+ * us the concurrent in-flight requests advantage over the ES connector.
+ *
+ * <p>Configured features (all surfaced as connector config keys, no JVM
+ * properties required):</p>
+ * <ul>
+ *     <li>Basic auth (username / password).</li>
+ *     <li>SSL / TLS with keystore + truststore.</li>
+ *     <li>HTTP proxy (host / port / basic-auth).</li>
+ *     <li>Kerberos (JAAS keytab, auto-renew TGT).</li>
+ *     <li>Response compression (Accept-Encoding gzip or zstd).</li>
+ * </ul>
  */
 public final class SolrClientFactory {
 
@@ -25,6 +35,8 @@ public final class SolrClientFactory {
     }
 
     public static SolrClient create(SolrSinkConfig config) {
+        KerberosConfigurator.install(config);
+
         if (config.isCloud()) {
             return buildCloud(config);
         }
@@ -36,7 +48,8 @@ public final class SolrClientFactory {
     }
 
     private static SolrClient buildSingle(SolrSinkConfig config, String url) {
-        log.info("Creating Http2SolrClient against {}", url);
+        log.info("Creating Http2SolrClient against {} (ssl={}, proxy={}, kerberos={})",
+                url, config.sslEnabled(), config.proxyEnabled(), config.kerberosEnabled());
         Http2SolrClient.Builder builder = new Http2SolrClient.Builder(url);
         applyCommon(builder, config);
         return builder.build();
@@ -68,10 +81,33 @@ public final class SolrClientFactory {
         builder.useHttp1_1(false);
         builder.withConnectionTimeout(config.connectionTimeoutMs(), TimeUnit.MILLISECONDS);
         builder.withIdleTimeout(config.readTimeoutMs(), TimeUnit.MILLISECONDS);
+
+        // Auth
         Optional<String> user = nonEmpty(config.username());
         Optional<String> pw = nonEmpty(config.password());
         if (user.isPresent() && pw.isPresent()) {
             builder.withBasicAuthCredentials(user.get(), pw.get());
+        }
+
+        // SSL
+        if (config.sslEnabled()) {
+            try {
+                SSLContext sslContext = SslConfigBuilder.build(config);
+                builder.withSSLContext(sslContext);
+            } catch (Exception e) {
+                throw new IllegalArgumentException("Failed to build SSL context: " + e.getMessage(), e);
+            }
+        }
+
+        // Proxy - we have to wire this via the Jetty client because SolrJ's
+        // builder does not expose proxy directly.
+        if (config.proxyEnabled()) {
+            ProxyConfigurator.apply(builder, config);
+        }
+
+        // Compression
+        if (config.connectionCompression()) {
+            CompressionConfigurator.apply(builder, config);
         }
     }
 
