@@ -6,35 +6,69 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class CollectionResolverTest {
 
-    @Test
-    void staticAlwaysWins() {
+    private SolrSinkConfig config(String strategy, String collection) {
         Map<String, String> props = new HashMap<>();
         props.put(SolrSinkConfig.SOLR_URL_CONFIG, "http://solr:8983/solr");
-        props.put(SolrSinkConfig.SOLR_COLLECTION_CONFIG, "users");
-        props.put(SolrSinkConfig.COLLECTION_NAMING_STRATEGY_CONFIG, "STATIC");
-        CollectionResolver r = new CollectionResolver(new SolrSinkConfig(props));
+        if (collection != null) {
+            props.put(SolrSinkConfig.SOLR_COLLECTION_CONFIG, collection);
+        }
+        if (strategy != null) {
+            props.put(SolrSinkConfig.COLLECTION_NAMING_STRATEGY_CONFIG, strategy);
+        }
+        return new SolrSinkConfig(props);
+    }
+
+    @Test
+    void staticAlwaysWins() {
+        CollectionResolver r = new CollectionResolver(config("STATIC", "users"));
         assertThat(r.resolve("anything")).isEqualTo("users");
     }
 
     @Test
+    void staticFallsBackToTopicWhenCollectionEmpty() {
+        CollectionResolver r = new CollectionResolver(config("STATIC", null));
+        assertThat(r.resolve("a-topic")).isEqualTo("a-topic");
+    }
+
+    @Test
     void topicFallsBackToTopicWhenCollectionEmpty() {
-        Map<String, String> props = new HashMap<>();
-        props.put(SolrSinkConfig.SOLR_URL_CONFIG, "http://solr:8983/solr");
-        CollectionResolver r = new CollectionResolver(new SolrSinkConfig(props));
+        CollectionResolver r = new CollectionResolver(config("TOPIC", null));
         assertThat(r.resolve("user-events")).isEqualTo("user-events");
     }
 
     @Test
+    void topicReturnsCollectionWhenSet() {
+        CollectionResolver r = new CollectionResolver(config("TOPIC", "users"));
+        assertThat(r.resolve("user-events")).isEqualTo("users");
+    }
+
+    @Test
     void regexReplacement() {
-        Map<String, String> props = new HashMap<>();
-        props.put(SolrSinkConfig.SOLR_URL_CONFIG, "http://solr:8983/solr");
-        props.put(SolrSinkConfig.SOLR_COLLECTION_CONFIG, "logs-.*=>logs");
-        props.put(SolrSinkConfig.COLLECTION_NAMING_STRATEGY_CONFIG, "TOPIC_REGEX");
-        CollectionResolver r = new CollectionResolver(new SolrSinkConfig(props));
+        CollectionResolver r = new CollectionResolver(config("TOPIC_REGEX", "logs-.*=>logs"));
         assertThat(r.resolve("logs-prod")).isEqualTo("logs");
         assertThat(r.resolve("logs-stage-7")).isEqualTo("logs");
+    }
+
+    @Test
+    void regexFallsBackToTopicOnNoMatch() {
+        CollectionResolver r = new CollectionResolver(config("TOPIC_REGEX", "logs-.*=>logs"));
+        assertThat(r.resolve("metrics-prod")).isEqualTo("metrics-prod");
+    }
+
+    @Test
+    void regexRequiresArrow() {
+        assertThatThrownBy(() ->
+                new CollectionResolver(config("TOPIC_REGEX", "no-arrow")))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void unknownStrategyTreatedAsTopic() {
+        CollectionResolver r = new CollectionResolver(config("BOGUS", "users"));
+        assertThat(r.resolve("anything")).isEqualTo("users");
     }
 }
