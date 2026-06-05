@@ -19,6 +19,7 @@ public class SolrSinkTask extends SinkTask {
     private SolrSinkConfig config;
     private SolrClient client;
     private SolrWriter writer;
+    private OffsetTracker offsetTracker;
 
     @Override
     public String version() {
@@ -30,17 +31,18 @@ public class SolrSinkTask extends SinkTask {
         log.info("Starting SolrSinkTask v{}", version());
         this.config = new SolrSinkConfig(props);
         this.client = createClient(config);
-        this.writer = createWriter(client, config);
+        this.offsetTracker = config.flushSynchronously() ? new SyncOffsetTracker() : new AsyncOffsetTracker();
+        this.writer = createWriter(client, config, offsetTracker);
     }
 
-    /** Test seam: override to inject a mocked SolrClient. */
+    /** Test seam. */
     protected SolrClient createClient(SolrSinkConfig config) {
         return SolrClientFactory.create(config);
     }
 
-    /** Test seam: override to inject a mocked SolrWriter. */
-    protected SolrWriter createWriter(SolrClient client, SolrSinkConfig config) {
-        return new SolrWriter(client, config);
+    /** Test seam. */
+    protected SolrWriter createWriter(SolrClient client, SolrSinkConfig config, OffsetTracker tracker) {
+        return new SolrWriter(client, config, tracker);
     }
 
     @Override
@@ -62,16 +64,33 @@ public class SolrSinkTask extends SinkTask {
     @Override
     public Map<TopicPartition, OffsetAndMetadata> preCommit(
             Map<TopicPartition, OffsetAndMetadata> currentOffsets) {
-        writer.flush();
-        log.debug("Solr flush complete: written={}, failed={}, retries={}, queueDepth={}",
-                writer.recordsWritten(), writer.recordsFailed(),
-                writer.retries(), writer.queueDepth());
-        return currentOffsets;
+        if (config.flushSynchronously()) {
+            writer.flush();
+            log.debug("Solr flush complete: written={}, failed={}, retries={}, queueDepth={}",
+                    writer.recordsWritten(), writer.recordsFailed(),
+                    writer.retries(), writer.queueDepth());
+            return currentOffsets;
+        }
+        // Async mode: fire any pending writes but DO NOT block. Return only
+        // the offsets that have actually been acked by Solr so the consumer
+        // can keep up while Solr is digesting older batches.
+        writer.flushAsync();
+        return offsetTracker.safeOffsets(currentOffsets);
     }
 
     @Override
     public void flush(Map<TopicPartition, OffsetAndMetadata> offsets) {
+        // flush() is the legacy hook; respect the caller and always block here.
         writer.flush();
+    }
+
+    @Override
+    public void close(Collection<TopicPartition> partitions) {
+        if (offsetTracker != null) {
+            for (TopicPartition tp : partitions) {
+                offsetTracker.closePartition(tp);
+            }
+        }
     }
 
     @Override
@@ -79,6 +98,9 @@ public class SolrSinkTask extends SinkTask {
         log.info("Stopping SolrSinkTask");
         if (writer != null) {
             writer.close();
+        }
+        if (offsetTracker != null) {
+            try { offsetTracker.close(); } catch (Exception ignored) { }
         }
     }
 }

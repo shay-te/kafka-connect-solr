@@ -53,7 +53,7 @@ class SolrBulkProcessorParityTest {
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(), null);
         SolrInputDocument d = new SolrInputDocument();
         d.addField("id", "1");
-        bulk.upsert("c", d);
+        bulk.upsert("c", d, null);
         bulk.flushSync();
         bulk.close();
         // The mock collected all calls — they must all be UpdateRequests.
@@ -78,7 +78,7 @@ class SolrBulkProcessorParityTest {
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(), null);
         SolrInputDocument d = new SolrInputDocument();
         d.addField("id", "1");
-        bulk.upsert("c", d);
+        bulk.upsert("c", d, null);
         bulk.flushSync();
         bulk.close();
 

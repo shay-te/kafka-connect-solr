@@ -2,7 +2,6 @@ package com.una.kafka.connect.solr;
 
 import org.apache.kafka.common.config.Config;
 import org.apache.kafka.common.config.ConfigDef;
-import org.apache.kafka.common.config.ConfigValue;
 import org.apache.kafka.connect.connector.Task;
 import org.apache.kafka.connect.sink.SinkConnector;
 import org.slf4j.Logger;
@@ -57,21 +56,6 @@ public class SolrSinkConnector extends SinkConnector {
 
     @Override
     public Config validate(Map<String, String> connectorConfigs) {
-        Config base = super.validate(connectorConfigs);
-        boolean hasUrl = !nullOrEmpty(connectorConfigs.get(SolrSinkConfig.SOLR_URL_CONFIG));
-        boolean hasZk = !nullOrEmpty(connectorConfigs.get(SolrSinkConfig.SOLR_ZK_HOST_CONFIG));
-        if (!hasUrl && !hasZk) {
-            for (ConfigValue v : base.configValues()) {
-                if (SolrSinkConfig.SOLR_URL_CONFIG.equals(v.name())
-                        || SolrSinkConfig.SOLR_ZK_HOST_CONFIG.equals(v.name())) {
-                    v.addErrorMessage("One of solr.url or solr.zk.host must be configured.");
-                }
-            }
-        }
-        return base;
-    }
-
-    private static boolean nullOrEmpty(String s) {
-        return s == null || s.trim().isEmpty();
+        return Validator.validate(super.validate(connectorConfigs), connectorConfigs);
     }
 }

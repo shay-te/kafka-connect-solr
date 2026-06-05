@@ -30,7 +30,7 @@ class SolrSinkTaskTest {
         private final SolrWriter writer;
         TestTask(SolrClient client, SolrWriter writer) { this.client = client; this.writer = writer; }
         @Override protected SolrClient createClient(SolrSinkConfig config) { return client; }
-        @Override protected SolrWriter createWriter(SolrClient c, SolrSinkConfig cfg) { return writer; }
+        @Override protected SolrWriter createWriter(SolrClient c, SolrSinkConfig cfg, OffsetTracker tracker) { return writer; }
     }
 
     private Map<String, String> baseProps() {

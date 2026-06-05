@@ -50,7 +50,9 @@ class SolrSinkConnectorTest {
         Config result = connector.validate(props);
         boolean foundError = false;
         for (ConfigValue v : result.configValues()) {
-            if (!v.errorMessages().isEmpty()) {
+            if ((SolrSinkConfig.SOLR_URL_CONFIG.equals(v.name())
+                    || SolrSinkConfig.SOLR_ZK_HOST_CONFIG.equals(v.name()))
+                    && !v.errorMessages().isEmpty()) {
                 foundError = true;
                 break;
             }

@@ -1,5 +1,6 @@
 package com.una.kafka.connect.solr;
 
+import com.una.kafka.connect.solr.SolrSinkConfig.IdStrategy;
 import com.una.kafka.connect.solr.SolrSinkConfig.WriteMethod;
 import org.apache.kafka.connect.data.Date;
 import org.apache.kafka.connect.data.Decimal;
@@ -16,23 +17,20 @@ import java.nio.ByteBuffer;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
 /**
- * Converts a Kafka Connect record into a SolrInputDocument. Field-type
- * mapping mirrors the Elasticsearch DataConverter:
- *   STRING        -> string
- *   INT8/16/32    -> pint
- *   INT64         -> plong
- *   FLOAT32       -> pfloat
- *   FLOAT64       -> pdouble
- *   BOOLEAN       -> boolean
- *   Timestamp     -> pdate (ISO-8601)
- *   Decimal       -> string (preserves precision)
- *   BYTES         -> base64 string
- *   STRUCT/MAP    -> dotted field paths
- *   ARRAY         -> multi-valued field
+ * Converts a Kafka Connect record into a SolrInputDocument. Same Kafka
+ * type matrix as the ES connector's DataConverter, with two additions:
+ * <ul>
+ *     <li><b>ATOMIC_UPDATE</b>: wraps every non-id field with the Solr
+ *         {@code {"set": value}} marker for partial updates.</li>
+ *     <li><b>compact.map.entries</b>: when true (default) maps are flattened
+ *         with dotted paths (Solr-native); when false they emit an array of
+ *         {@code {key, value}} structs (ES-compat).</li>
+ * </ul>
  */
 public class SolrRecordConverter {
 
@@ -43,12 +41,16 @@ public class SolrRecordConverter {
     }
 
     public SolrInputDocument convert(SinkRecord record) {
+        return convert(record, config.keyIgnore());
+    }
+
+    public SolrInputDocument convert(SinkRecord record, boolean keyIgnored) {
         if (record.value() == null) {
             return null;
         }
 
         SolrInputDocument doc = new SolrInputDocument();
-        doc.addField("id", deriveId(record));
+        doc.addField("id", deriveId(record, keyIgnored));
 
         Object value = record.value();
         Schema schema = record.valueSchema();
@@ -67,7 +69,17 @@ public class SolrRecordConverter {
     }
 
     public String deriveId(SinkRecord record) {
-        switch (config.idStrategy()) {
+        return deriveId(record, config.keyIgnore());
+    }
+
+    public String deriveId(SinkRecord record, boolean keyIgnored) {
+        IdStrategy strategy = config.idStrategy();
+        // If KAFKA_KEY is requested but the key is being ignored (globally
+        // or per-topic), fall back to a stable topic-partition-offset id.
+        if (keyIgnored && strategy == IdStrategy.KAFKA_KEY) {
+            strategy = IdStrategy.TOPIC_PARTITION_OFFSET;
+        }
+        switch (strategy) {
             case KAFKA_KEY:
                 if (record.key() == null) {
                     throw new DataException("id.strategy=KAFKA_KEY but record key is null");
@@ -85,7 +97,7 @@ public class SolrRecordConverter {
             case UUID:
                 return UUID.randomUUID().toString();
             default:
-                throw new DataException("Unknown id strategy " + config.idStrategy());
+                throw new DataException("Unknown id strategy " + strategy);
         }
     }
 
@@ -101,10 +113,27 @@ public class SolrRecordConverter {
     }
 
     private void populateFromMap(SolrInputDocument doc, Map<?, ?> map, String prefix) {
+        if (config.compactMapEntries()) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                String name = prefix.isEmpty() ? String.valueOf(entry.getKey())
+                        : prefix + "." + entry.getKey();
+                addField(doc, name, entry.getValue(), null);
+            }
+            return;
+        }
+        // ES-compat: emit an array of {key, value} pairs under prefix.
+        if (prefix.isEmpty()) {
+            // Map at top level becomes the doc itself.
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                addField(doc, String.valueOf(entry.getKey()), entry.getValue(), null);
+            }
+            return;
+        }
         for (Map.Entry<?, ?> entry : map.entrySet()) {
-            String name = prefix.isEmpty() ? String.valueOf(entry.getKey())
-                    : prefix + "." + entry.getKey();
-            addField(doc, name, entry.getValue(), null);
+            Map<String, Object> pair = new LinkedHashMap<>();
+            pair.put("key", entry.getKey());
+            pair.put("value", entry.getValue());
+            doc.addField(prefix, pair);
         }
     }
 

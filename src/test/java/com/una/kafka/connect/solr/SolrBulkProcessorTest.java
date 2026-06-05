@@ -48,8 +48,8 @@ class SolrBulkProcessorTest {
         SolrClient client = mock(SolrClient.class);
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
 
-        bulk.upsert("c", doc("1"));
-        bulk.upsert("c", doc("2"));
+        bulk.upsert("c", doc("1"), null);
+        bulk.upsert("c", doc("2"), null);
         bulk.flushSync();
 
         verify(client, atLeastOnce()).request(any(UpdateRequest.class), anyString());
@@ -62,8 +62,8 @@ class SolrBulkProcessorTest {
         SolrClient client = mock(SolrClient.class);
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
 
-        bulk.delete("c", "1");
-        bulk.delete("c", "2");
+        bulk.delete("c", "1", null);
+        bulk.delete("c", "2", null);
         bulk.flushSync();
 
         verify(client, atLeastOnce()).request(any(UpdateRequest.class), anyString());
@@ -84,8 +84,8 @@ class SolrBulkProcessorTest {
         Map<String, String> overrides = new HashMap<>();
         overrides.put(SolrSinkConfig.MAX_RETRIES_CONFIG, "3");
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(overrides), null);
-        bulk.upsert("c", doc("1"));
-        bulk.upsert("c", doc("2"));
+        bulk.upsert("c", doc("1"), null);
+        bulk.upsert("c", doc("2"), null);
         bulk.flushSync();
 
         assertThat(attempts.get()).isGreaterThanOrEqualTo(2);
@@ -99,8 +99,8 @@ class SolrBulkProcessorTest {
                 .thenThrow(new BaseHttpSolrClient.RemoteSolrException("u", 400, "bad", null));
 
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
-        bulk.upsert("c", doc("1"));
-        bulk.upsert("c", doc("2"));
+        bulk.upsert("c", doc("1"), null);
+        bulk.upsert("c", doc("2"), null);
 
         assertThatThrownBy(bulk::flushSync).isInstanceOf(RetriableException.class);
         bulk.close();
@@ -110,8 +110,8 @@ class SolrBulkProcessorTest {
     void closeFlushesAndShutsDown() throws Exception {
         SolrClient client = mock(SolrClient.class);
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
-        bulk.upsert("c", doc("1"));
-        bulk.close(); // implicitly flushes
+        bulk.upsert("c", doc("1"), null);
+        bulk.close();
     }
 
     @Test
@@ -128,14 +128,45 @@ class SolrBulkProcessorTest {
     @Test
     void lingerTriggersFlush() throws Exception {
         Map<String, String> overrides = new HashMap<>();
-        overrides.put(SolrSinkConfig.LINGER_MS_CONFIG, "0"); // immediate
+        overrides.put(SolrSinkConfig.LINGER_MS_CONFIG, "0");
         overrides.put(SolrSinkConfig.BATCH_SIZE_CONFIG, "1000");
         SolrClient client = mock(SolrClient.class);
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(overrides), null);
 
-        bulk.upsert("c", doc("1"));
+        bulk.upsert("c", doc("1"), null);
         bulk.flushSync();
         verify(client, atLeastOnce()).request(any(UpdateRequest.class), anyString());
+        bulk.close();
+    }
+
+    @Test
+    void byteSizeCapTriggersFlush() throws Exception {
+        Map<String, String> overrides = new HashMap<>();
+        overrides.put(SolrSinkConfig.BATCH_SIZE_CONFIG, "10000");
+        overrides.put(SolrSinkConfig.BULK_SIZE_BYTES_CONFIG, "200");
+        overrides.put(SolrSinkConfig.LINGER_MS_CONFIG, "100000");
+        SolrClient client = mock(SolrClient.class);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(overrides), null);
+        SolrInputDocument big = new SolrInputDocument();
+        big.addField("id", "1");
+        big.addField("payload", "x".repeat(500));
+        bulk.upsert("c", big, null);
+        bulk.flushSync();
+        verify(client, atLeastOnce()).request(any(UpdateRequest.class), anyString());
+        bulk.close();
+    }
+
+    @Test
+    void offsetStateIsMarkedAcked() throws Exception {
+        SolrClient client = mock(SolrClient.class);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()), null);
+        OffsetState s1 = new OffsetState(new org.apache.kafka.common.TopicPartition("t", 0), 7L);
+        OffsetState s2 = new OffsetState(new org.apache.kafka.common.TopicPartition("t", 0), 8L);
+        bulk.upsert("c", doc("1"), s1);
+        bulk.upsert("c", doc("2"), s2);
+        bulk.flushSync();
+        assertThat(s1.isAcked()).isTrue();
+        assertThat(s2.isAcked()).isTrue();
         bulk.close();
     }
 }
