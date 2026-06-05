@@ -7,6 +7,7 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 import java.security.KeyStore;
 import java.security.SecureRandom;
+import java.util.Arrays;
 
 public final class SslConfigBuilder {
 
@@ -29,16 +30,21 @@ public final class SslConfigBuilder {
         if (location == null || location.isEmpty()) {
             return null;
         }
-        KeyStore ks = KeyStore.getInstance(config.sslKeystoreType());
-        try (InputStream in = new FileInputStream(location)) {
-            ks.load(in, asChars(config.sslKeystorePassword()));
+        char[] storePw = asChars(config.sslKeystorePassword());
+        String keyPwStr = config.sslKeyPassword();
+        char[] keyPw = (keyPwStr == null || keyPwStr.isEmpty()) ? storePw : asChars(keyPwStr);
+        try {
+            KeyStore ks = KeyStore.getInstance(config.sslKeystoreType());
+            try (InputStream in = new FileInputStream(location)) {
+                ks.load(in, storePw);
+            }
+            KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+            kmf.init(ks, keyPw);
+            return kmf;
+        } finally {
+            Arrays.fill(storePw, '\0');
+            if (keyPw != storePw) Arrays.fill(keyPw, '\0');
         }
-        KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-        String keyPw = config.sslKeyPassword();
-        kmf.init(ks, keyPw == null || keyPw.isEmpty()
-                ? asChars(config.sslKeystorePassword())
-                : asChars(keyPw));
-        return kmf;
     }
 
     private static TrustManagerFactory loadTrustManagers(SolrSinkConfig config) throws Exception {
@@ -47,8 +53,13 @@ public final class SslConfigBuilder {
             return null;
         }
         KeyStore ts = KeyStore.getInstance(config.sslTruststoreType());
-        try (InputStream in = new FileInputStream(location)) {
-            ts.load(in, asChars(config.sslTruststorePassword()));
+        char[] pw = asChars(config.sslTruststorePassword());
+        try {
+            try (InputStream in = new FileInputStream(location)) {
+                ts.load(in, pw);
+            }
+        } finally {
+            Arrays.fill(pw, '\0');
         }
         TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
         tmf.init(ts);

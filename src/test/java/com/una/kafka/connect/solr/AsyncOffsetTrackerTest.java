@@ -56,10 +56,32 @@ class AsyncOffsetTrackerTest {
         a0.markAcked();
         Map<TopicPartition, OffsetAndMetadata> safe = tracker.safeOffsets(new HashMap<>());
         assertThat(safe.get(new TopicPartition("t", 0)).offset()).isEqualTo(6L);
-        assertThat(safe.containsKey(new TopicPartition("t", 1))).isFalse();
+        // Partition 1 has unacked work — must be pinned at the earliest unacked offset
+        // so a restart re-delivers from there. Without this, Connect would commit
+        // currentOffsets[tp] (the next-to-read) and silently lose b0.
+        assertThat(safe.get(new TopicPartition("t", 1)).offset()).isEqualTo(9L);
         b0.markAcked();
         safe = tracker.safeOffsets(new HashMap<>());
         assertThat(safe.get(new TopicPartition("t", 1)).offset()).isEqualTo(10L);
+    }
+
+    @Test
+    void noAcksYetPinsToEarliestTrackedOffset() {
+        // Regression: previously when nothing was acked, the tracker left
+        // currentOffsets[tp] unchanged, causing Kafka Connect to commit past
+        // unacked records and lose them on restart.
+        AsyncOffsetTracker tracker = new AsyncOffsetTracker();
+        tracker.track(r(0, 5));
+        tracker.track(r(0, 6));
+        tracker.track(r(0, 7));
+
+        Map<TopicPartition, OffsetAndMetadata> currentOffsets = new HashMap<>();
+        currentOffsets.put(new TopicPartition("t", 0), new OffsetAndMetadata(8L));
+
+        Map<TopicPartition, OffsetAndMetadata> safe = tracker.safeOffsets(currentOffsets);
+        assertThat(safe.get(new TopicPartition("t", 0)).offset())
+                .as("With unacked work, commit must pin to earliest unacked (5), not the consumer's next-to-read (8)")
+                .isEqualTo(5L);
     }
 
     @Test

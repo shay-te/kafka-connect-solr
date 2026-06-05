@@ -27,13 +27,15 @@ public final class AsyncOffsetTracker implements OffsetTracker {
         Map<TopicPartition, OffsetAndMetadata> out = new HashMap<>(currentOffsets);
         for (Map.Entry<TopicPartition, Deque<OffsetState>> e : pending.entrySet()) {
             Deque<OffsetState> queue = e.getValue();
-            long lastAcked = -1L;
             while (!queue.isEmpty() && queue.peekFirst().isAcked()) {
-                lastAcked = queue.pollFirst().offset();
+                queue.pollFirst();
             }
-            if (lastAcked >= 0) {
-                // Kafka Connect commits "next-to-read" semantics, so +1.
-                out.put(e.getKey(), new OffsetAndMetadata(lastAcked + 1));
+            if (!queue.isEmpty()) {
+                // Earliest unacked record — pin commit there so on restart we
+                // re-deliver from this offset. Without this, currentOffsets[tp]
+                // (the consumer's next-to-read) would be committed and any
+                // unacked records before it would be silently lost.
+                out.put(e.getKey(), new OffsetAndMetadata(queue.peekFirst().offset()));
             }
         }
         return out;

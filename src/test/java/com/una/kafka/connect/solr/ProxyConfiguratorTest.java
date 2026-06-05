@@ -1,6 +1,5 @@
 package com.una.kafka.connect.solr;
 
-import org.apache.solr.client.solrj.impl.Http2SolrClient;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -31,7 +30,7 @@ class ProxyConfiguratorTest {
 
     @Test
     void noProxyIsNoop() {
-        ProxyConfigurator.apply(new Http2SolrClient.Builder("http://x"), cfg(new HashMap<>()));
+        ProxyConfigurator.apply(cfg(new HashMap<>()));
         assertThat(System.getProperty("http.proxyHost")).isNull();
     }
 
@@ -40,7 +39,7 @@ class ProxyConfiguratorTest {
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.PROXY_HOST_CONFIG, "proxy.example");
         // port omitted -> default 0
-        ProxyConfigurator.apply(new Http2SolrClient.Builder("http://x"), cfg(o));
+        ProxyConfigurator.apply(cfg(o));
         assertThat(System.getProperty("http.proxyHost")).isNull();
     }
 
@@ -49,7 +48,7 @@ class ProxyConfiguratorTest {
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.PROXY_HOST_CONFIG, "proxy.example");
         o.put(SolrSinkConfig.PROXY_PORT_CONFIG, "3128");
-        ProxyConfigurator.apply(new Http2SolrClient.Builder("http://x"), cfg(o));
+        ProxyConfigurator.apply(cfg(o));
         assertThat(System.getProperty("http.proxyHost")).isEqualTo("proxy.example");
         assertThat(System.getProperty("http.proxyPort")).isEqualTo("3128");
         assertThat(System.getProperty("https.proxyHost")).isEqualTo("proxy.example");
@@ -63,7 +62,7 @@ class ProxyConfiguratorTest {
         o.put(SolrSinkConfig.PROXY_PORT_CONFIG, "3128");
         o.put(SolrSinkConfig.PROXY_USERNAME_CONFIG, "alice");
         o.put(SolrSinkConfig.PROXY_PASSWORD_CONFIG, "s3cret");
-        ProxyConfigurator.apply(new Http2SolrClient.Builder("http://x"), cfg(o));
+        ProxyConfigurator.apply(cfg(o));
         // We can't directly retrieve the installed Authenticator, but
         // Authenticator.getDefault was removed in JDK 9. Confirm via the
         // request flow that asks for proxy auth.

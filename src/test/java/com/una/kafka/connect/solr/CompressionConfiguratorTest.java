@@ -1,6 +1,5 @@
 package com.una.kafka.connect.solr;
 
-import org.apache.solr.client.solrj.impl.Http2SolrClient;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -27,7 +26,7 @@ class CompressionConfiguratorTest {
 
     @Test
     void disabledIsNoop() {
-        CompressionConfigurator.apply(new Http2SolrClient.Builder("http://x"), cfg(new HashMap<>()));
+        CompressionConfigurator.apply(cfg(new HashMap<>()));
         assertThat(System.getProperty("jetty.client.acceptedEncodings")).isNull();
         assertThat(System.getProperty("jetty.client.gzipRequests")).isNull();
     }
@@ -37,7 +36,7 @@ class CompressionConfiguratorTest {
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.CONNECTION_COMPRESSION_CONFIG, "true");
         o.put(SolrSinkConfig.CONNECTION_COMPRESSION_ALGORITHM_CONFIG, "GZIP");
-        CompressionConfigurator.apply(new Http2SolrClient.Builder("http://x"), cfg(o));
+        CompressionConfigurator.apply(cfg(o));
         assertThat(System.getProperty("jetty.client.acceptedEncodings")).isEqualTo("gzip");
     }
 
@@ -46,7 +45,7 @@ class CompressionConfiguratorTest {
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.CONNECTION_COMPRESSION_CONFIG, "true");
         o.put(SolrSinkConfig.CONNECTION_COMPRESSION_ALGORITHM_CONFIG, "ZSTD");
-        CompressionConfigurator.apply(new Http2SolrClient.Builder("http://x"), cfg(o));
+        CompressionConfigurator.apply(cfg(o));
         assertThat(System.getProperty("jetty.client.acceptedEncodings")).isEqualTo("zstd, gzip");
     }
 
@@ -55,7 +54,7 @@ class CompressionConfiguratorTest {
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.CONNECTION_COMPRESSION_CONFIG, "true");
         o.put(SolrSinkConfig.CONNECTION_COMPRESSION_ALGORITHM_CONFIG, "NONE");
-        CompressionConfigurator.apply(new Http2SolrClient.Builder("http://x"), cfg(o));
+        CompressionConfigurator.apply(cfg(o));
         assertThat(System.getProperty("jetty.client.acceptedEncodings")).isNull();
     }
 
@@ -63,7 +62,7 @@ class CompressionConfiguratorTest {
     void requestCompressionTogglesGzipFlag() {
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.CONNECTION_COMPRESSION_REQUESTS_CONFIG, "true");
-        CompressionConfigurator.apply(new Http2SolrClient.Builder("http://x"), cfg(o));
+        CompressionConfigurator.apply(cfg(o));
         assertThat(System.getProperty("jetty.client.gzipRequests")).isEqualTo("true");
     }
 
@@ -73,7 +72,7 @@ class CompressionConfiguratorTest {
         o.put(SolrSinkConfig.CONNECTION_COMPRESSION_CONFIG, "true");
         o.put(SolrSinkConfig.CONNECTION_COMPRESSION_ALGORITHM_CONFIG, "GZIP");
         o.put(SolrSinkConfig.CONNECTION_COMPRESSION_REQUESTS_CONFIG, "true");
-        CompressionConfigurator.apply(new Http2SolrClient.Builder("http://x"), cfg(o));
+        CompressionConfigurator.apply(cfg(o));
         assertThat(System.getProperty("jetty.client.acceptedEncodings")).isEqualTo("gzip");
         assertThat(System.getProperty("jetty.client.gzipRequests")).isEqualTo("true");
     }

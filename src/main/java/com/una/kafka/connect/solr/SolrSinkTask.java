@@ -16,9 +16,10 @@ public class SolrSinkTask extends SinkTask {
 
     private static final Logger log = LoggerFactory.getLogger(SolrSinkTask.class);
 
-    private SolrSinkConfig config;
     private SolrWriter writer;
     private OffsetTracker offsetTracker;
+    private boolean sync;
+    private boolean streaming;
 
     @Override
     public String version() {
@@ -28,10 +29,11 @@ public class SolrSinkTask extends SinkTask {
     @Override
     public void start(Map<String, String> props) {
         log.info("Starting SolrSinkTask v{}", version());
-        this.config = new SolrSinkConfig(props);
+        SolrSinkConfig config = new SolrSinkConfig(props);
         SolrClient client = createClient(config);
         // CUHTTP2 buffers internally; per-record async offsets aren't meaningful in streaming mode.
-        boolean sync = config.flushSynchronously() || config.streamingEnabled();
+        this.streaming = config.streamingEnabled();
+        this.sync = config.flushSynchronously() || streaming;
         this.offsetTracker = sync ? new SyncOffsetTracker() : new AsyncOffsetTracker();
         this.writer = createWriter(client, config, offsetTracker);
     }
@@ -63,9 +65,9 @@ public class SolrSinkTask extends SinkTask {
     @Override
     public Map<TopicPartition, OffsetAndMetadata> preCommit(
             Map<TopicPartition, OffsetAndMetadata> currentOffsets) {
-        if (config.flushSynchronously() || config.streamingEnabled()) {
+        if (sync) {
             writer.flush();
-            logMetrics(config.streamingEnabled() ? "streaming" : "sync");
+            logMetrics(streaming ? "streaming" : "sync");
             return currentOffsets;
         }
         writer.flushAsync();

@@ -96,12 +96,15 @@ public final class SolrSchemaManager {
         }
         try {
             new SchemaRequest.AddField(attrs).process(client, collection);
-            known.add(name);
             log.info("Added Solr field {} ({}) to collection {}", name, attrs.get("type"), collection);
         } catch (Exception e) {
-            log.debug("AddField {} ignored: {}", name, e.getMessage());
-            known.add(name);
+            // Mark as known either way so we don't retry every record. Log at WARN
+            // (not DEBUG) so genuine failures - permission denied, schema invalid -
+            // are visible; the "field already exists" race noise is one WARN per
+            // field per task lifetime, not per record.
+            log.warn("Could not add Solr field {} to collection {}: {}", name, collection, e.getMessage());
         }
+        known.add(name);
     }
 
     public static String solrTypeFor(Schema schema) {

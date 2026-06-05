@@ -86,10 +86,27 @@ public final class Validator {
             err(v, SolrSinkConfig.MAX_BUFFERED_RECORDS_CONFIG,
                     "max.buffered.records (" + maxBuf + ") must be >= batch.size (" + batch + ").");
         }
+        if (batch != null && batch < 1) {
+            err(v, SolrSinkConfig.BATCH_SIZE_CONFIG, "batch.size must be >= 1.");
+        }
         Integer inFlight = asInt(p.get(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG));
         if (inFlight != null && inFlight < 1) {
             err(v, SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG,
                     "max.in.flight.requests must be >= 1.");
+        }
+        Long flushTimeout = asLong(p.get(SolrSinkConfig.FLUSH_TIMEOUT_MS_CONFIG));
+        if (flushTimeout != null && flushTimeout < 1) {
+            err(v, SolrSinkConfig.FLUSH_TIMEOUT_MS_CONFIG,
+                    "flush.timeout.ms must be >= 1 (got " + flushTimeout + "). "
+                            + "0 or negative would make every flush throw immediately.");
+        }
+        Long linger = asLong(p.get(SolrSinkConfig.LINGER_MS_CONFIG));
+        if (linger != null && linger < 0) {
+            err(v, SolrSinkConfig.LINGER_MS_CONFIG, "linger.ms must be >= 0.");
+        }
+        Integer maxRetries = asInt(p.get(SolrSinkConfig.MAX_RETRIES_CONFIG));
+        if (maxRetries != null && maxRetries < 0) {
+            err(v, SolrSinkConfig.MAX_RETRIES_CONFIG, "max.retries must be >= 0.");
         }
     }
 
@@ -137,6 +154,15 @@ public final class Validator {
         if (s == null) return null;
         try {
             return Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static Long asLong(String s) {
+        if (s == null) return null;
+        try {
+            return Long.parseLong(s);
         } catch (NumberFormatException e) {
             return null;
         }

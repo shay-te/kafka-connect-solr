@@ -1,6 +1,5 @@
 package com.una.kafka.connect.solr;
 
-import org.apache.solr.client.solrj.impl.Http2SolrClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -11,7 +10,7 @@ public final class CompressionConfigurator {
     private CompressionConfigurator() {
     }
 
-    public static void apply(Http2SolrClient.Builder builder, SolrSinkConfig config) {
+    public static void apply(SolrSinkConfig config) {
         if (config.connectionCompression()) {
             applyResponseCompression(config);
         }
