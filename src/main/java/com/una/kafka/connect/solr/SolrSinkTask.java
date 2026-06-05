@@ -29,8 +29,18 @@ public class SolrSinkTask extends SinkTask {
     public void start(Map<String, String> props) {
         log.info("Starting SolrSinkTask v{}", version());
         this.config = new SolrSinkConfig(props);
-        this.client = SolrClientFactory.create(config);
-        this.writer = new SolrWriter(client, config);
+        this.client = createClient(config);
+        this.writer = createWriter(client, config);
+    }
+
+    /** Test seam: override to inject a mocked SolrClient. */
+    protected SolrClient createClient(SolrSinkConfig config) {
+        return SolrClientFactory.create(config);
+    }
+
+    /** Test seam: override to inject a mocked SolrWriter. */
+    protected SolrWriter createWriter(SolrClient client, SolrSinkConfig config) {
+        return new SolrWriter(client, config);
     }
 
     @Override
