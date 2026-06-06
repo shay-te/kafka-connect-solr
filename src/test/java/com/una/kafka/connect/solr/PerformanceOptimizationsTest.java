@@ -12,9 +12,6 @@ import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -137,6 +134,10 @@ class PerformanceOptimizationsTest {
 
     @Test
     void counterMetricsAreCorrectUnderConcurrency() throws Exception {
+        // SolrBulkProcessor.upsert is single-producer (driven by Kafka Connect's
+        // single SinkTask thread). The concurrency we want to verify here is
+        // the *internal* worker pool: 8 in-flight requests, each updating the
+        // LongAdder counters from a different worker thread.
         Map<String, String> p = new HashMap<>();
         p.put(SolrSinkConfig.SOLR_URL_CONFIG, "http://x");
         p.put(SolrSinkConfig.SOLR_COLLECTION_CONFIG, "c");
@@ -148,18 +149,12 @@ class PerformanceOptimizationsTest {
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, new SolrSinkConfig(p));
 
         final int total = 500;
-        ExecutorService exec = Executors.newFixedThreadPool(8);
         try {
             for (int i = 0; i < total; i++) {
-                final int id = i;
-                exec.submit(() -> {
-                    SolrInputDocument d = new SolrInputDocument();
-                    d.addField("id", String.valueOf(id));
-                    bulk.upsert("c", d, null);
-                });
+                SolrInputDocument d = new SolrInputDocument();
+                d.addField("id", String.valueOf(i));
+                bulk.upsert("c", d, null);
             }
-            exec.shutdown();
-            exec.awaitTermination(30, TimeUnit.SECONDS);
             bulk.flushSync();
 
             assertThat(bulk.recordsWritten()).isEqualTo((long) total);

@@ -39,7 +39,7 @@ class ExternalResourceManagerTest {
     @Test
     void requiredAndMissingThrows() throws Exception {
         SolrClient client = mock(SolrClient.class);
-        when(client.request(any(SolrRequest.class))).thenReturn(emptyCollections());
+        when(client.request(any(SolrRequest.class), any())).thenReturn(emptyCollections());
 
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "REQUIRED");
@@ -52,7 +52,7 @@ class ExternalResourceManagerTest {
     @Test
     void autoModeCreatesWhenMissing() throws Exception {
         SolrClient client = mock(SolrClient.class);
-        when(client.request(any(SolrRequest.class))).thenReturn(emptyCollections());
+        when(client.request(any(SolrRequest.class), any())).thenReturn(emptyCollections());
 
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "AUTO");
@@ -67,7 +67,7 @@ class ExternalResourceManagerTest {
     @Test
     void autoModeFailsWhenAutoCreateDisabled() throws Exception {
         SolrClient client = mock(SolrClient.class);
-        when(client.request(any(SolrRequest.class))).thenReturn(emptyCollections());
+        when(client.request(any(SolrRequest.class), any())).thenReturn(emptyCollections());
 
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "AUTO");
@@ -82,7 +82,7 @@ class ExternalResourceManagerTest {
     @Test
     void existingCollectionIsMemoised() throws Exception {
         SolrClient client = mock(SolrClient.class);
-        when(client.request(any(SolrRequest.class))).thenReturn(listingWith("users"));
+        when(client.request(any(SolrRequest.class), any())).thenReturn(listingWith("users"));
 
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "AUTO");
@@ -91,7 +91,7 @@ class ExternalResourceManagerTest {
         mgr.ensure("users");
         mgr.ensure("users");
         // Only one probe.
-        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(1)).request(any(SolrRequest.class));
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(1)).request(any(SolrRequest.class), any());
     }
 
     private NamedList<Object> emptyCollections() {

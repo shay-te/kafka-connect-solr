@@ -30,6 +30,8 @@ class SolrWriterTest {
         p.put(SolrSinkConfig.LINGER_MS_CONFIG, "1");
         p.put(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG, "1");
         p.put(SolrSinkConfig.MAX_RETRIES_CONFIG, "0");
+        // Skip the existence probe — tests use a mocked SolrClient with no collections.
+        p.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "UNUSED");
         p.putAll(overrides);
         return new SolrSinkConfig(p);
     }

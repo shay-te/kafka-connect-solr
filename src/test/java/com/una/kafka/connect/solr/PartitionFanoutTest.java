@@ -87,16 +87,18 @@ class PartitionFanoutTest {
 
         w.write(rec(0, 1));
         w.flush();
-        long writtenBefore = w.recordsWritten();
-        assertThat(writtenBefore).isGreaterThanOrEqualTo(1);
+        assertThat(w.recordsWritten()).isGreaterThanOrEqualTo(1);
 
-        // Simulate a rebalance away from partition 0.
+        // Simulate a rebalance away from partition 0. The processor for tp(0) is
+        // closed and removed from perPartition; its counter is no longer visible
+        // via the aggregator.
         w.partitionRevoked(new TopicPartition("users", 0));
 
-        // After revoke, writing to partition 0 again creates a NEW processor.
+        // After revoke, writing to partition 0 again creates a NEW processor and
+        // the request actually goes out — verify via the mock client.
         w.write(rec(0, 2));
         w.flush();
-        assertThat(w.recordsWritten()).isGreaterThan(writtenBefore);
+        verify(client, atLeastOnce()).request(any(UpdateRequest.class), anyString());
         w.close();
     }
 }

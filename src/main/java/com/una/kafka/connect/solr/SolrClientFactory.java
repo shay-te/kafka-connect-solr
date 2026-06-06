@@ -1,18 +1,14 @@
 package com.una.kafka.connect.solr;
 
 import org.apache.solr.client.solrj.SolrClient;
-import org.apache.solr.client.solrj.SolrRequest;
-import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.embedded.SSLConfig;
 import org.apache.solr.client.solrj.impl.CloudHttp2SolrClient;
 import org.apache.solr.client.solrj.impl.ConcurrentUpdateHttp2SolrClient;
 import org.apache.solr.client.solrj.impl.Http2SolrClient;
 import org.apache.solr.client.solrj.impl.LBHttp2SolrClient;
-import org.apache.solr.common.util.NamedList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
@@ -60,32 +56,26 @@ public final class SolrClientFactory {
         Http2SolrClient.Builder inner = new Http2SolrClient.Builder();
         applyCommon(inner, config);
         Http2SolrClient delegate = inner.build();
-        LBHttp2SolrClient lb = new LBHttp2SolrClient.Builder(delegate, urls.toArray(new String[0])).build();
         // LBHttp2SolrClient.close() (via LBSolrClient.close()) only shuts down the
         // alive-check executor; it does NOT close the delegate Http2SolrClient.
-        // Verified against SolrJ 9.4.1 source. Wrap so our close() closes both.
-        return new OwnedLBClient(lb, delegate);
+        // Verified against SolrJ 9.4.1 source. Subclass to also close the delegate.
+        return new OwnedLBClient(delegate, urls.toArray(new String[0]));
     }
 
-    private static final class OwnedLBClient extends SolrClient {
-        private final LBHttp2SolrClient lb;
+    private static final class OwnedLBClient extends LBHttp2SolrClient {
         private final Http2SolrClient delegate;
 
-        OwnedLBClient(LBHttp2SolrClient lb, Http2SolrClient delegate) {
-            this.lb = lb;
+        OwnedLBClient(Http2SolrClient delegate, String... urls) {
+            super(delegate, urls);
             this.delegate = delegate;
         }
 
         @Override
-        public NamedList<Object> request(SolrRequest<?> request, String collection)
-                throws SolrServerException, IOException {
-            return lb.request(request, collection);
-        }
-
-        @Override
-        public void close() throws IOException {
-            try (Http2SolrClient owned = delegate) {
-                lb.close();
+        public void close() {
+            try {
+                super.close();
+            } finally {
+                delegate.close();
             }
         }
     }

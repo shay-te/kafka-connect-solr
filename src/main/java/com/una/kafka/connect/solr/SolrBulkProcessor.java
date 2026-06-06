@@ -16,11 +16,12 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -34,7 +35,12 @@ public final class SolrBulkProcessor implements AutoCloseable {
 
     private final SolrClient client;
     private final ExecutorService executor;
-    private final BlockingQueue<Future<?>> inflight;
+    // Back-pressure: acquired before each submit, released by the worker when its
+    // task completes. Caps concurrent in-flight requests at maxInFlight.
+    private final Semaphore inflightSlots;
+    // Tracks futures for flushSync to wait on. Unbounded - the Semaphore bounds in-flight,
+    // not this queue. Workers do NOT remove their own futures from here; flushSync drains.
+    private final Queue<Future<?>> inflight = new ConcurrentLinkedQueue<>();
 
     private final int batchSize;
     private final long lingerNanos;
@@ -84,7 +90,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
         }
 
         int inFlight = Math.max(1, config.maxInFlight());
-        this.inflight = new ArrayBlockingQueue<>(inFlight);
+        this.inflightSlots = new Semaphore(inFlight);
         this.executor = new ThreadPoolExecutor(
                 inFlight, inFlight,
                 30L, TimeUnit.SECONDS,
@@ -214,12 +220,19 @@ public final class SolrBulkProcessor implements AutoCloseable {
 
     private void submit(Runnable task) {
         try {
-            Future<?> f = executor.submit(task);
-            inflight.put(f);
+            inflightSlots.acquire();
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
             throw new RetriableException(ie);
         }
+        Runnable wrapped = () -> {
+            try {
+                task.run();
+            } finally {
+                inflightSlots.release();
+            }
+        };
+        inflight.add(executor.submit(wrapped));
     }
 
     private Void sendUpsert(String collection, List<SolrInputDocument> docs, List<OffsetState> states) {

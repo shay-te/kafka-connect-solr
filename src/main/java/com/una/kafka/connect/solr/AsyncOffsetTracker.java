@@ -27,15 +27,19 @@ public final class AsyncOffsetTracker implements OffsetTracker {
         Map<TopicPartition, OffsetAndMetadata> out = new HashMap<>(currentOffsets);
         for (Map.Entry<TopicPartition, Deque<OffsetState>> e : pending.entrySet()) {
             Deque<OffsetState> queue = e.getValue();
+            long lastAcked = -1L;
             while (!queue.isEmpty() && queue.peekFirst().isAcked()) {
-                queue.pollFirst();
+                lastAcked = queue.pollFirst().offset();
             }
             if (!queue.isEmpty()) {
-                // Earliest unacked record — pin commit there so on restart we
-                // re-deliver from this offset. Without this, currentOffsets[tp]
-                // (the consumer's next-to-read) would be committed and any
-                // unacked records before it would be silently lost.
+                // Has unacked work — pin commit to the earliest unacked offset
+                // so on restart we re-deliver from there. Without this,
+                // currentOffsets[tp] (the consumer's next-to-read) would be
+                // committed and any unacked records before it would be lost.
                 out.put(e.getKey(), new OffsetAndMetadata(queue.peekFirst().offset()));
+            } else if (lastAcked >= 0) {
+                // All tracked records acked — commit just past the last one.
+                out.put(e.getKey(), new OffsetAndMetadata(lastAcked + 1));
             }
         }
         return out;

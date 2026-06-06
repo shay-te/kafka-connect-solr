@@ -65,7 +65,7 @@ class CounterMetricsTest {
     }
 
     @Test
-    void failedCounterAdvancesWhenRetriesExhaust() {
+    void failedCounterAdvancesWhenRetriesExhaust() throws Exception {
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.MAX_RETRIES_CONFIG, "1");
         SolrClient client = mock(SolrClient.class);
@@ -80,12 +80,15 @@ class CounterMetricsTest {
         bulk.upsert("c", doc("1"), null);
         bulk.upsert("c", doc("2"), null);
 
+        // flushSync rethrows on the first failure; the second batch may still be
+        // in flight. close() then drains everything (its internal flushSync
+        // catches), so by the time we assert both batches have finished and
+        // mutated recordsFailed.
         assertThatThrownBy(bulk::flushSync).isInstanceOf(RuntimeException.class);
-        // Two records were in the failed batch, recordsFailed should reflect that.
-        assertThat(bulk.recordsFailed()).isGreaterThanOrEqualTo(2L);
-        // And we exhausted maxRetries=1 retry attempts.
-        assertThat(bulk.retries()).isGreaterThanOrEqualTo(1L);
         bulk.close();
+
+        assertThat(bulk.recordsFailed()).isGreaterThanOrEqualTo(2L);
+        assertThat(bulk.retries()).isGreaterThanOrEqualTo(1L);
     }
 
     @Test
