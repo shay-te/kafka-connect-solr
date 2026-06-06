@@ -2,6 +2,7 @@ package com.una.kafka.connect.solr;
 
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.RetriableException;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.kafka.connect.sink.SinkTask;
@@ -54,8 +55,11 @@ public class SolrSinkTask extends SinkTask {
         for (SinkRecord r : records) {
             try {
                 writer.write(r);
-            } catch (RetriableException re) {
-                throw re;
+            } catch (ConnectException ce) {
+                // RetriableException, DataException, and other ConnectException subclasses
+                // are already framework-typed - propagate them as-is so Kafka Connect
+                // applies the right policy (retry vs DLQ vs fail).
+                throw ce;
             } catch (Exception e) {
                 throw new RetriableException("Failed to enqueue record " + r.kafkaOffset(), e);
             }

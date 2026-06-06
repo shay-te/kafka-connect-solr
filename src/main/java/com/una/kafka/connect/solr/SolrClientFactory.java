@@ -110,7 +110,9 @@ public final class SolrClientFactory {
         Http2SolrClient.Builder inner = new Http2SolrClient.Builder(url);
         applyCommon(inner, config);
         Http2SolrClient http2 = inner.build();
-        return new ConcurrentUpdateHttp2SolrClient.Builder(url, http2)
+        // Pass closeHttp2Client=true so CUHTTP2.close() also closes the inner client.
+        // Without this flag the delegate Http2SolrClient leaks on shutdown.
+        return new ConcurrentUpdateHttp2SolrClient.Builder(url, http2, true)
                 .withQueueSize(config.streamingQueueSize())
                 .withThreadCount(config.streamingThreads())
                 .build();

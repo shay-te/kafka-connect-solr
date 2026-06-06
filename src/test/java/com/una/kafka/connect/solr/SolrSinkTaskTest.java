@@ -3,6 +3,7 @@ package com.una.kafka.connect.solr;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.connect.data.Schema;
+import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.errors.RetriableException;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.solr.client.solrj.SolrClient;
@@ -94,6 +95,23 @@ class SolrSinkTaskTest {
         SinkRecord r = new SinkRecord("users", 0, Schema.STRING_SCHEMA, "a", null, "x", 1L);
         assertThatThrownBy(() -> task.put(Collections.singletonList(r)))
                 .isInstanceOf(RetriableException.class);
+        task.stop();
+    }
+
+    @Test
+    void dataExceptionPropagatesUnwrapped() {
+        // When behavior.on.malformed.documents=fail, the writer throws DataException.
+        // The task must propagate it as-is so Kafka Connect can route to DLQ / fail the task,
+        // NOT wrap it as RetriableException (which would cause infinite retry of a permanent error).
+        SolrWriter writer = mock(SolrWriter.class);
+        doThrow(new DataException("malformed record")).when(writer).write(any());
+        TestTask task = new TestTask(mock(SolrClient.class), writer);
+        task.start(baseProps());
+
+        SinkRecord r = new SinkRecord("users", 0, Schema.STRING_SCHEMA, "a", null, "x", 1L);
+        assertThatThrownBy(() -> task.put(Collections.singletonList(r)))
+                .isInstanceOf(DataException.class)
+                .isNotInstanceOf(RetriableException.class);
         task.stop();
     }
 
