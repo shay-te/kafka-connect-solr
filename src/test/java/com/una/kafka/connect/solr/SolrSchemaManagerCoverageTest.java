@@ -7,9 +7,7 @@ import org.apache.solr.client.solrj.SolrRequest;
 import org.apache.solr.common.util.NamedList;
 import org.junit.jupiter.api.Test;
 
-import java.util.Arrays;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -51,33 +49,32 @@ class SolrSchemaManagerCoverageTest {
     @Test
     void sameSchemaSeenIsMemoised() throws Exception {
         SolrClient client = mock(SolrClient.class);
-        // Return zero fields so every nested ensureField triggers a network call.
         when(client.request(any(SolrRequest.class), any())).thenReturn(emptySchema());
 
         SolrSchemaManager m = new SolrSchemaManager(client, cfg(new HashMap<>()));
         Schema s = SchemaBuilder.struct().field("x", Schema.STRING_SCHEMA).build();
         m.evolveIfNeeded("c", s);
-        m.evolveIfNeeded("c", s);                       // hit seen-set short-circuit
-        int firstCalls = org.mockito.Mockito.mockingDetails(client).getInvocations().size();
-        // The seen-set should prevent the second call from re-driving the request.
-        assertThat(firstCalls).isGreaterThan(0);
+        int afterFirst = org.mockito.Mockito.mockingDetails(client).getInvocations().size();
+        m.evolveIfNeeded("c", s);
+        int afterSecond = org.mockito.Mockito.mockingDetails(client).getInvocations().size();
+        // Seen-set short-circuit: second call must not add any request.
+        assertThat(afterSecond).isEqualTo(afterFirst);
     }
 
     @Test
     void addFieldFailureIsSwallowedAndMarkedKnown() throws Exception {
         SolrClient client = mock(SolrClient.class);
-        // Probe returns empty (forces add); Add itself throws — the catch should swallow.
+        // First request is the schema probe (returns empty fields). Subsequent AddField requests throw.
+        java.util.concurrent.atomic.AtomicInteger n = new java.util.concurrent.atomic.AtomicInteger();
         when(client.request(any(SolrRequest.class), any())).thenAnswer(inv -> {
-            SolrRequest<?> req = inv.getArgument(0);
-            if (req.getPath().contains("schema") && !req.getPath().endsWith("fields")) {
-                throw new RuntimeException("add failed");
-            }
-            return emptySchema();
+            if (n.getAndIncrement() == 0) return emptySchema();
+            throw new RuntimeException("add failed");
         });
         SolrSchemaManager m = new SolrSchemaManager(client, cfg(new HashMap<>()));
         Schema s = SchemaBuilder.struct().field("y", Schema.INT64_SCHEMA).build();
         m.evolveIfNeeded("c", s);
-        // No exception leaked.
+        // No exception leaked; both probe and AddField fired.
+        verify(client, times(2)).request(any(SolrRequest.class), any());
     }
 
     @Test
@@ -157,7 +154,6 @@ class SolrSchemaManagerCoverageTest {
         verify(client, times(2)).request(any(SolrRequest.class), any());
     }
 
-    @SuppressWarnings("unchecked")
     private NamedList<Object> emptySchema() {
         NamedList<Object> r = new NamedList<>();
         r.add("fields", java.util.Collections.emptyList());

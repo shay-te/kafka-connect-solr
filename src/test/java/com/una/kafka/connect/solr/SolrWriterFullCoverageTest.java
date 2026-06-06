@@ -5,15 +5,14 @@ import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.header.ConnectHeaders;
-import org.apache.kafka.connect.header.Header;
 import org.apache.kafka.connect.header.Headers;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.request.UpdateRequest;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -90,7 +89,7 @@ class SolrWriterFullCoverageTest {
         Schema s = SchemaBuilder.struct().field("x", Schema.STRING_SCHEMA).build();
         Struct v = new Struct(s).put("x", "y");
         Headers h = new ConnectHeaders();
-        h.addBytes("_v", "99".getBytes());
+        h.addBytes("_v", "99".getBytes(StandardCharsets.US_ASCII));
         w.write(rec(s, v, h, null));
         w.flush();
         w.close();

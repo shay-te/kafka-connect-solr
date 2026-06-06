@@ -72,6 +72,7 @@ class SolrBulkProcessorDryRunTest {
         SolrClient client = mock(SolrClient.class);
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()));
         bulk.close();
-        // No throw on second close.
+        // Second close must not throw — the executor is already shut down.
+        bulk.close();
     }
 }

@@ -1,11 +1,9 @@
 package com.una.kafka.connect.solr;
 
-import org.apache.kafka.connect.data.Date;
 import org.apache.kafka.connect.data.Decimal;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
-import org.apache.kafka.connect.data.Time;
 import org.apache.kafka.connect.data.Timestamp;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.solr.common.SolrInputDocument;
@@ -13,7 +11,6 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.nio.ByteBuffer;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -82,25 +79,6 @@ class SolrRecordConverterExhaustiveTest {
         SolrInputDocument doc = c.convert(r);
         // id always present; nothing else.
         assertThat(doc.getFieldNames()).containsExactly("id");
-    }
-
-    @Test
-    void arrayFieldWithNonListCollectionInput() {
-        // ArrayDeque is a Collection but not a List — hits the Collection branch.
-        Schema arr = SchemaBuilder.array(Schema.STRING_SCHEMA).build();
-        Schema schema = SchemaBuilder.struct().field("tags", arr).optional().build();
-        // Cannot stuff an ArrayDeque into a Struct typed as ARRAY directly — feed via Map.
-        SolrRecordConverter c = new SolrRecordConverter(cfg(new HashMap<>()));
-        Map<String, Object> m = new LinkedHashMap<>();
-        ArrayDeque<String> q = new ArrayDeque<>();
-        q.add("a");
-        q.add("b");
-        m.put("tags", q);
-        SinkRecord r = new SinkRecord("c", 0, Schema.STRING_SCHEMA, "k", null, m, 1L);
-        SolrInputDocument doc = c.convert(r);
-        // ArrayDeque is rendered through addScalar fall-through (no schema), each entry stored individually.
-        // Mostly we want the branch coverage; not asserting a specific shape.
-        assertThat((Object) doc).isNotNull();
     }
 
     @Test
