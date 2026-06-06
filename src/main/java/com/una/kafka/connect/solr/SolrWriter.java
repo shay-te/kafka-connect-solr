@@ -103,13 +103,20 @@ public final class SolrWriter implements AutoCloseable {
 
     public void write(SinkRecord record) {
         String topic = record.topic();
+        // Resolve tombstone path before the full pipeline so IGNORE (default) skips
+        // collection-resolve / resource-ensure / processor-lookup work entirely.
+        if (record.value() == null) {
+            if (behaviorOnNullValues == BehaviorOnNullValues.IGNORE) {
+                return;
+            }
+            String collection = collections.resolve(topic);
+            resources.ensure(collection);
+            handleTombstone(record, collection, processorFor(record));
+            return;
+        }
         String collection = collections.resolve(topic);
         resources.ensure(collection);
         SolrBulkProcessor bulk = processorFor(record);
-        if (record.value() == null) {
-            handleTombstone(record, collection, bulk);
-            return;
-        }
         try {
             if (topicsIgnoreSchemaEmpty || !topicsIgnoreSchema.contains(topic)) {
                 schemaManager.evolveIfNeeded(collection, record.valueSchema());

@@ -205,6 +205,9 @@ public final class SolrBulkProcessor implements AutoCloseable {
             try {
                 f.get(remaining, TimeUnit.MILLISECONDS);
             } catch (Exception e) {
+                // Early exit on first failure leaves remaining futures in flight.
+                // Their permits release as workers finish; at-least-once is preserved
+                // because Connect re-delivers on the next preCommit retry.
                 throw new RetriableException("Solr bulk request failed", e);
             }
         }
@@ -232,7 +235,14 @@ public final class SolrBulkProcessor implements AutoCloseable {
                 inflightSlots.release();
             }
         };
-        inflight.add(executor.submit(wrapped));
+        try {
+            inflight.add(executor.submit(wrapped));
+        } catch (RuntimeException e) {
+            // submit failed (e.g. RejectedExecutionException on shutdown) - the
+            // wrapped runnable will never run, so release the permit ourselves.
+            inflightSlots.release();
+            throw e;
+        }
     }
 
     private Void sendUpsert(String collection, List<SolrInputDocument> docs, List<OffsetState> states) {
