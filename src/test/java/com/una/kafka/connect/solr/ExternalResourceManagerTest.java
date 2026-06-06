@@ -94,6 +94,30 @@ class ExternalResourceManagerTest {
         org.mockito.Mockito.verify(client, org.mockito.Mockito.times(1)).request(any(SolrRequest.class), any());
     }
 
+    @Test
+    void nullOrEmptyCollectionShortCircuits() {
+        SolrClient client = mock(SolrClient.class);
+        ExternalResourceManager mgr = new ExternalResourceManager(client, cfg(new HashMap<>()));
+        mgr.ensure(null);
+        mgr.ensure("");
+        org.mockito.Mockito.verifyNoInteractions(client);
+    }
+
+    @Test
+    void probeFailureFallsThroughToCreateOrThrow() throws Exception {
+        // Simulate a probe error (network failure during listCollections).
+        SolrClient client = mock(SolrClient.class);
+        when(client.request(any(SolrRequest.class), any()))
+                .thenThrow(new java.io.IOException("network blip"));
+
+        Map<String, String> o = new HashMap<>();
+        o.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "REQUIRED");
+        o.put(SolrSinkConfig.SOLR_ZK_HOST_CONFIG, "zk:2181");
+        ExternalResourceManager mgr = new ExternalResourceManager(client, cfg(o));
+        assertThatThrownBy(() -> mgr.ensure("anywhere"))
+                .isInstanceOf(ConnectException.class);
+    }
+
     private NamedList<Object> emptyCollections() {
         NamedList<Object> r = new NamedList<>();
         r.add("collections", java.util.Collections.emptyList());

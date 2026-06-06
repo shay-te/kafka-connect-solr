@@ -102,4 +102,33 @@ class AsyncOffsetTrackerTest {
         Map<TopicPartition, OffsetAndMetadata> safe = tracker.safeOffsets(current);
         assertThat(safe).isEqualTo(current);
     }
+
+    @Test
+    void emptyDequeAfterFullDrainLeavesCurrentOffsetsAlone() {
+        // After all tracked records are acked and polled, the partition's deque
+        // is empty but the partition key remains in `pending`. A subsequent
+        // safeOffsets call with NEW currentOffsets should leave them untouched
+        // since lastAcked stays -1 (loop doesn't iterate) and queue is empty.
+        AsyncOffsetTracker tracker = new AsyncOffsetTracker();
+        OffsetState s = tracker.track(r(0, 5));
+        s.markAcked();
+        // First call drains the deque.
+        tracker.safeOffsets(new HashMap<>());
+
+        // Second call with different currentOffsets - partition's deque is now
+        // empty and lastAcked=-1; out[tp] stays as currentOffsets[tp].
+        Map<TopicPartition, OffsetAndMetadata> current = new HashMap<>();
+        current.put(new TopicPartition("t", 0), new OffsetAndMetadata(99L));
+        Map<TopicPartition, OffsetAndMetadata> safe = tracker.safeOffsets(current);
+        assertThat(safe.get(new TopicPartition("t", 0)).offset()).isEqualTo(99L);
+    }
+
+    @Test
+    void pendingCountCountsAllTracked() {
+        AsyncOffsetTracker tracker = new AsyncOffsetTracker();
+        tracker.track(r(0, 0));
+        tracker.track(r(0, 1));
+        tracker.track(r(1, 0));
+        assertThat(tracker.pendingCount()).isEqualTo(3);
+    }
 }
