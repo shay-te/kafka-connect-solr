@@ -3,6 +3,7 @@ package com.una.kafka.connect.solr;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
+import org.apache.kafka.connect.errors.RetriableException;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.SolrQuery;
@@ -21,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Drives the full SolrSinkTask -> SolrWriter -> SolrBulkProcessor -> SolrJ
@@ -56,36 +58,48 @@ class SolrEndToEndIT {
         p.put(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG, "2");
         p.put(SolrSinkConfig.MAX_RETRIES_CONFIG, "0");
         p.put(SolrSinkConfig.COMMIT_WITHIN_MS_CONFIG, "100");
-        // Schemaless mode in solr-precreate handles field add-on-the-fly; do not double-handle.
+        // solr-precreate enables schemaless field add-on-the-fly; do not double-handle.
         p.put(SolrSinkConfig.SCHEMA_AUTO_EVOLVE_CONFIG, "false");
         p.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "UNUSED");
         return p;
+    }
+
+    /** Poll Solr until `query` returns {@code expected} hits, or fail after 5s. */
+    private static void awaitHits(String query, long expected) throws Exception {
+        long deadline = System.currentTimeMillis() + 5_000L;
+        long last = -1;
+        try (SolrClient verifier = new Http2SolrClient.Builder(baseUrl).build()) {
+            while (System.currentTimeMillis() < deadline) {
+                last = verifier.query("e2e", new SolrQuery(query).setRows(0))
+                        .getResults().getNumFound();
+                if (last == expected) return;
+                Thread.sleep(50);
+            }
+        }
+        assertThat(last).as("expected %d hits for '%s'", expected, query).isEqualTo(expected);
     }
 
     @Test
     void writesStructDocumentsAndReadsThemBackById() throws Exception {
         SolrSinkTask task = new SolrSinkTask();
         task.start(baseProps());
-
-        Schema s = SchemaBuilder.struct()
-                .field("first_name", Schema.STRING_SCHEMA)
-                .field("age", Schema.INT32_SCHEMA)
-                .build();
-        List<SinkRecord> batch = new ArrayList<>();
-        for (int i = 0; i < 10; i++) {
-            Struct v = new Struct(s).put("first_name", "Ada-" + i).put("age", 30 + i);
-            batch.add(new SinkRecord("e2e", 0, Schema.STRING_SCHEMA,
-                    "writes-" + i, s, v, i));
+        try {
+            Schema s = SchemaBuilder.struct()
+                    .field("first_name", Schema.STRING_SCHEMA)
+                    .field("age", Schema.INT32_SCHEMA)
+                    .build();
+            List<SinkRecord> batch = new ArrayList<>();
+            for (int i = 0; i < 10; i++) {
+                Struct v = new Struct(s).put("first_name", "Ada-" + i).put("age", 30 + i);
+                batch.add(new SinkRecord("e2e", 0, Schema.STRING_SCHEMA,
+                        "writes-" + i, s, v, i));
+            }
+            task.put(batch);
+            task.flush(new HashMap<>());
+            awaitHits("id:writes-*", 10L);
+        } finally {
+            task.stop();
         }
-        task.put(batch);
-        task.flush(new HashMap<>());
-        Thread.sleep(500);
-
-        try (SolrClient verifier = new Http2SolrClient.Builder(baseUrl).build()) {
-            QueryResponse resp = verifier.query("e2e", new SolrQuery("id:writes-*").setRows(20));
-            assertThat(resp.getResults().getNumFound()).isEqualTo(10L);
-        }
-        task.stop();
     }
 
     @Test
@@ -94,24 +108,22 @@ class SolrEndToEndIT {
         p.put(SolrSinkConfig.BEHAVIOR_ON_NULL_VALUES_CONFIG, "delete");
         SolrSinkTask task = new SolrSinkTask();
         task.start(p);
+        try {
+            Schema s = SchemaBuilder.struct().field("first_name", Schema.STRING_SCHEMA).build();
+            Struct v = new Struct(s).put("first_name", "soon-to-be-deleted");
+            task.put(Collections.singletonList(
+                    new SinkRecord("e2e", 0, Schema.STRING_SCHEMA, "tomb-doc", s, v, 1L)));
+            task.flush(new HashMap<>());
+            awaitHits("id:tomb-doc", 1L);
 
-        Schema s = SchemaBuilder.struct().field("first_name", Schema.STRING_SCHEMA).build();
-        Struct v = new Struct(s).put("first_name", "soon-to-be-deleted");
-        task.put(Collections.singletonList(
-                new SinkRecord("e2e", 0, Schema.STRING_SCHEMA, "tomb-doc", s, v, 1L)));
-        task.flush(new HashMap<>());
-        Thread.sleep(300);
-        // Tombstone: same key, null value.
-        task.put(Collections.singletonList(
-                new SinkRecord("e2e", 0, Schema.STRING_SCHEMA, "tomb-doc", null, null, 2L)));
-        task.flush(new HashMap<>());
-        Thread.sleep(500);
-
-        try (SolrClient verifier = new Http2SolrClient.Builder(baseUrl).build()) {
-            QueryResponse resp = verifier.query("e2e", new SolrQuery("id:tomb-doc"));
-            assertThat(resp.getResults().getNumFound()).isZero();
+            // Tombstone: same key, null value.
+            task.put(Collections.singletonList(
+                    new SinkRecord("e2e", 0, Schema.STRING_SCHEMA, "tomb-doc", null, null, 2L)));
+            task.flush(new HashMap<>());
+            awaitHits("id:tomb-doc", 0L);
+        } finally {
+            task.stop();
         }
-        task.stop();
     }
 
     @Test
@@ -120,25 +132,22 @@ class SolrEndToEndIT {
         p.put(SolrSinkConfig.FLUSH_SYNCHRONOUSLY_CONFIG, "false");
         SolrSinkTask task = new SolrSinkTask();
         task.start(p);
-
-        Schema s = SchemaBuilder.struct().field("first_name", Schema.STRING_SCHEMA).build();
-        List<SinkRecord> batch = new ArrayList<>();
-        for (int i = 0; i < 5; i++) {
-            Struct v = new Struct(s).put("first_name", "async-" + i);
-            batch.add(new SinkRecord("e2e", 1, Schema.STRING_SCHEMA,
-                    "async-" + i, s, v, 100L + i));
+        try {
+            Schema s = SchemaBuilder.struct().field("first_name", Schema.STRING_SCHEMA).build();
+            List<SinkRecord> batch = new ArrayList<>();
+            for (int i = 0; i < 5; i++) {
+                Struct v = new Struct(s).put("first_name", "async-" + i);
+                batch.add(new SinkRecord("e2e", 1, Schema.STRING_SCHEMA,
+                        "async-" + i, s, v, 100L + i));
+            }
+            task.put(batch);
+            // Sync drain via flush, then exercise the async preCommit path.
+            task.flush(new HashMap<>());
+            task.preCommit(new HashMap<>());
+            awaitHits("id:async-*", 5L);
+        } finally {
+            task.stop();
         }
-        task.put(batch);
-        // Force a sync drain via flush, then exercise the async preCommit path.
-        task.flush(new HashMap<>());
-        task.preCommit(new HashMap<>());
-        Thread.sleep(500);
-
-        try (SolrClient verifier = new Http2SolrClient.Builder(baseUrl).build()) {
-            QueryResponse resp = verifier.query("e2e", new SolrQuery("id:async-*").setRows(20));
-            assertThat(resp.getResults().getNumFound()).isEqualTo(5L);
-        }
-        task.stop();
     }
 
     @Test
@@ -151,15 +160,17 @@ class SolrEndToEndIT {
         p.put(SolrSinkConfig.FLUSH_TIMEOUT_MS_CONFIG, "5000");
         SolrSinkTask task = new SolrSinkTask();
         task.start(p);
+        try {
+            Schema s = SchemaBuilder.struct().field("first_name", Schema.STRING_SCHEMA).build();
+            Struct v = new Struct(s).put("first_name", "bob");
+            task.put(Collections.singletonList(
+                    new SinkRecord("e2e", 0, Schema.STRING_SCHEMA, "retry-1", s, v, 1L)));
 
-        Schema s = SchemaBuilder.struct().field("first_name", Schema.STRING_SCHEMA).build();
-        Struct v = new Struct(s).put("first_name", "bob");
-        task.put(Collections.singletonList(
-                new SinkRecord("e2e", 0, Schema.STRING_SCHEMA, "retry-1", s, v, 1L)));
-
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> task.flush(new HashMap<>()))
-                .isInstanceOf(RuntimeException.class);
-        task.stop();
+            assertThatThrownBy(() -> task.flush(new HashMap<>()))
+                    .isInstanceOf(RetriableException.class);
+        } finally {
+            task.stop();
+        }
     }
 
     @Test
@@ -170,22 +181,19 @@ class SolrEndToEndIT {
         p.put(SolrSinkConfig.STREAMING_THREADS_CONFIG, "2");
         SolrSinkTask task = new SolrSinkTask();
         task.start(p);
-
-        Schema s = SchemaBuilder.struct().field("first_name", Schema.STRING_SCHEMA).build();
-        List<SinkRecord> batch = new ArrayList<>();
-        for (int i = 0; i < 5; i++) {
-            Struct v = new Struct(s).put("first_name", "stream-" + i);
-            batch.add(new SinkRecord("e2e", 0, Schema.STRING_SCHEMA,
-                    "stream-" + i, s, v, 200L + i));
+        try {
+            Schema s = SchemaBuilder.struct().field("first_name", Schema.STRING_SCHEMA).build();
+            List<SinkRecord> batch = new ArrayList<>();
+            for (int i = 0; i < 5; i++) {
+                Struct v = new Struct(s).put("first_name", "stream-" + i);
+                batch.add(new SinkRecord("e2e", 0, Schema.STRING_SCHEMA,
+                        "stream-" + i, s, v, 200L + i));
+            }
+            task.put(batch);
+            task.flush(new HashMap<>());
+            awaitHits("id:stream-*", 5L);
+        } finally {
+            task.stop();
         }
-        task.put(batch);
-        task.flush(new HashMap<>());
-        Thread.sleep(1000);
-
-        try (SolrClient verifier = new Http2SolrClient.Builder(baseUrl).build()) {
-            QueryResponse resp = verifier.query("e2e", new SolrQuery("id:stream-*").setRows(10));
-            assertThat(resp.getResults().getNumFound()).isEqualTo(5L);
-        }
-        task.stop();
     }
 }

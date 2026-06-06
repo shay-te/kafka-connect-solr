@@ -9,10 +9,13 @@ import org.apache.kafka.connect.header.Headers;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.request.UpdateRequest;
+import org.apache.solr.common.SolrInputDocument;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,6 +52,15 @@ class SolrWriterFullCoverageTest {
                 null, null, h);
     }
 
+    /** Capture the first SolrInputDocument the writer sent to the client. */
+    private SolrInputDocument captureFirstDoc(SolrClient client) throws Exception {
+        ArgumentCaptor<UpdateRequest> captor = ArgumentCaptor.forClass(UpdateRequest.class);
+        verify(client, atLeastOnce()).request(captor.capture(), anyString());
+        List<SolrInputDocument> docs = captor.getValue().getDocuments();
+        assertThat(docs).isNotNull().isNotEmpty();
+        return docs.get(0);
+    }
+
     @Test
     void externalVersionNumericHeader() throws Exception {
         Map<String, String> o = new HashMap<>();
@@ -61,7 +73,7 @@ class SolrWriterFullCoverageTest {
         h.addLong("_v", 1234L);
         w.write(rec(s, v, h, null));
         w.flush();
-        verify(client, atLeastOnce()).request(any(UpdateRequest.class), anyString());
+        assertThat(captureFirstDoc(client).getFieldValue("_version_")).isEqualTo(1234L);
         w.close();
     }
 
@@ -77,6 +89,7 @@ class SolrWriterFullCoverageTest {
         h.addString("_v", " 42 ");
         w.write(rec(s, v, h, null));
         w.flush();
+        assertThat(captureFirstDoc(client).getFieldValue("_version_")).isEqualTo(42L);
         w.close();
     }
 
@@ -92,6 +105,7 @@ class SolrWriterFullCoverageTest {
         h.addBytes("_v", "99".getBytes(StandardCharsets.US_ASCII));
         w.write(rec(s, v, h, null));
         w.flush();
+        assertThat(captureFirstDoc(client).getFieldValue("_version_")).isEqualTo(99L);
         w.close();
     }
 
@@ -103,9 +117,10 @@ class SolrWriterFullCoverageTest {
         SolrWriter w = new SolrWriter(client, cfg(o));
         Schema s = SchemaBuilder.struct().field("x", Schema.STRING_SCHEMA).build();
         Struct v = new Struct(s).put("x", "y");
-        // No header — applyExternalVersion's "h == null" branch.
+        // No header — applyExternalVersion's "h == null" branch; _version_ must NOT be set.
         w.write(rec(s, v, new ConnectHeaders(), null));
         w.flush();
+        assertThat(captureFirstDoc(client).getFieldValue("_version_")).isNull();
         w.close();
     }
 
@@ -121,6 +136,8 @@ class SolrWriterFullCoverageTest {
         h.addString("_v", "not-a-number");
         w.write(rec(s, v, h, null));
         w.flush();
+        // parseAsciiLong returns null for non-numeric — _version_ must NOT be stamped.
+        assertThat(captureFirstDoc(client).getFieldValue("_version_")).isNull();
         w.close();
     }
 

@@ -77,8 +77,9 @@ class SolrRecordConverterExhaustiveTest {
         Struct v = new Struct(empty);
         SinkRecord r = new SinkRecord("c", 0, Schema.STRING_SCHEMA, "k", empty, v, 1L);
         SolrInputDocument doc = c.convert(r);
-        // id always present; nothing else.
-        assertThat(doc.getFieldNames()).containsExactly("id");
+        // id always present; empty struct yields no other fields.
+        assertThat(doc.getFieldValue("id")).isEqualTo("k");
+        assertThat(doc.getFieldNames()).hasSize(1);
     }
 
     @Test
@@ -98,14 +99,18 @@ class SolrRecordConverterExhaustiveTest {
     void arrayOfBytesEncodesEveryItemAsBase64() {
         Schema arr = SchemaBuilder.array(Schema.BYTES_SCHEMA).build();
         Schema schema = SchemaBuilder.struct().field("blobs", arr).build();
+        byte[] b1 = new byte[]{1, 2, 3};
+        byte[] b2 = new byte[]{4, 5};
         List<Object> items = new ArrayList<>();
-        items.add(new byte[]{1, 2, 3});
-        items.add(ByteBuffer.wrap(new byte[]{4, 5}));
+        items.add(b1);
+        items.add(ByteBuffer.wrap(b2));
         Struct v = new Struct(schema).put("blobs", items);
 
         SolrRecordConverter c = new SolrRecordConverter(cfg(new HashMap<>()));
         SolrInputDocument doc = c.convert(rec(schema, v));
-        assertThat(doc.getField("blobs").getValues()).containsExactly("AQID", "BAU=");
+        java.util.Base64.Encoder enc = java.util.Base64.getEncoder();
+        assertThat(doc.getField("blobs").getValues())
+                .containsExactly(enc.encodeToString(b1), enc.encodeToString(b2));
     }
 
     @Test

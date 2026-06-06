@@ -154,12 +154,14 @@ class SolrRecordConverterBranchTest {
     @Test
     void decimalAndTimestampInsideTopLevelMap() {
         // No schema; addScalar with schema==null + special types — Date routes via instanceof.
+        // Note: without a Decimal logical-type schema, BigDecimal passes through unconverted.
+        // Production callers that need string-encoded decimals should provide the schema —
+        // see SolrDataTypeParityTest for the schema-driven path.
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("d", new BigDecimal("1.23"));   // BigDecimal is Number — falls through to default
-        m.put("t", new java.util.Date(0L));    // Date branch
+        m.put("d", new BigDecimal("1.23"));
+        m.put("t", new java.util.Date(0L));
         SolrRecordConverter c = new SolrRecordConverter(cfg(new HashMap<>()));
         SolrInputDocument doc = c.convert(recMap(m));
-        // BigDecimal would arrive as-is (no special handling without schema name).
         assertThat(doc.getFieldValue("d")).isInstanceOf(BigDecimal.class);
         assertThat(doc.getFieldValue("t")).isEqualTo("1970-01-01T00:00:00Z");
     }

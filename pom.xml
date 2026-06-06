@@ -295,6 +295,8 @@
                         <configuration>
                             <excludedGroups></excludedGroups>
                             <groups>performance</groups>
+                            <!-- argLine intentionally overrides parent (drops the JaCoCo agent);
+                                 perf runs measure throughput, not coverage. -->
                             <argLine>-Xms512m -Xmx2g</argLine>
                             <forkCount>1</forkCount>
                             <reuseForks>false</reuseForks>

@@ -110,13 +110,20 @@ class SolrSchemaManagerCoverageTest {
 
     @Test
     void nestedStructFieldsAddedWithDottedNames() throws Exception {
+        // Mock-level check: nested struct fires multiple SchemaRequests (probe + one AddField per leaf).
+        // SolrSchemaManagerIT.evolveNestedStructUsesDottedFieldNames is the IT that asserts the
+        // dotted name lands in Solr's actual schema.
         SolrClient client = mock(SolrClient.class);
         when(client.request(any(SolrRequest.class), any())).thenReturn(emptySchema());
         SolrSchemaManager m = new SolrSchemaManager(client, cfg(new HashMap<>()));
-        Schema inner = SchemaBuilder.struct().field("city", Schema.STRING_SCHEMA).build();
+        Schema inner = SchemaBuilder.struct()
+                .field("city", Schema.STRING_SCHEMA)
+                .field("zip", Schema.STRING_SCHEMA)
+                .build();
         Schema outer = SchemaBuilder.struct().field("addr", inner).build();
         m.evolveIfNeeded("c", outer);
-        verify(client, org.mockito.Mockito.atLeastOnce()).request(any(SolrRequest.class), any());
+        // Probe + AddField for addr.city + AddField for addr.zip = 3.
+        verify(client, times(3)).request(any(SolrRequest.class), any());
     }
 
     @Test

@@ -14,6 +14,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Drives the InMemoryJaasConfig inner class — covers getAppConfigurationEntry's
  * match path (matching SolrJClient name) and miss path (unknown entry name).
+ * Mutates JVM-global JAAS Configuration; restores it in finally. Must run sequentially.
  */
 class KerberosInMemoryJaasConfigTest {
 
