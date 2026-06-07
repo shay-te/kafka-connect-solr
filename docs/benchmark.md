@@ -112,7 +112,7 @@ Codex's seven dimensions, mapped onto what to check in the harness output:
 |----------------------------|------------------------------------------------------------|
 | Connector CPU              | `cpu/wall` ratio in the metrics table; CPU flamegraph      |
 | GC allocations             | `alloc MB/s` in the table; allocation flamegraph           |
-| WKB transform              | Hot frames under `WKBToLatLonTransform.apply` in CPU graph |
+| WKB transform              | Hot frames under `WKBToLatLon.apply` in CPU graph          |
 | SolrJ serialization        | Hot frames under `JavaBinCodec` in CPU graph               |
 | HTTP / network             | `cpu/wall < 1`; Socket I/O view in JMC                     |
 | Solr indexing/commit/merge | Solr container logs (`autoCommit`, segment merges)         |
