@@ -253,6 +253,12 @@ mvn -B clean package -DskipTests
 mvn -B test -Pperf
 ```
 
+The perf run prints a per-phase metrics table (CPU vs wall, allocated MB/s, GC count + pause
+ms) for both Solr and Elasticsearch, and writes JFR captures to `target/perf-jfr/` for
+offline flamegraph analysis. See [`docs/benchmark.md`](docs/benchmark.md) for the
+methodology, how to read the table, and how to attach async-profiler for live CPU /
+allocation flamegraphs.
+
 ### What you get
 
 | Path | What it is |

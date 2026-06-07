@@ -104,24 +104,58 @@ class SolrVsElasticsearchPerfTest {
         timeElasticsearch(warmup);
 
         // -- Solr side: drive through SolrSinkTask (real connector code).
-        long solrMs = timeSolr(records);
+        PhaseResult solr = measure("solr", () -> timeSolr(records));
 
         // -- Elasticsearch side: drive through the high-level REST bulk API
         //    (the Confluent ES connector wraps the same client).
-        long esMs = timeElasticsearch(records);
+        PhaseResult es = measure("elasticsearch", () -> timeElasticsearch(records));
 
-        double solrRps = RECORDS * 1000.0 / solrMs;
-        double esRps = RECORDS * 1000.0 / esMs;
+        double solrRps = RECORDS * 1000.0 / solr.wallMs;
+        double esRps = RECORDS * 1000.0 / es.wallMs;
         System.out.printf("%n[HEAD-TO-HEAD] records=%d batch=%d inFlight=%d%n",
                 RECORDS, BATCH_SIZE, IN_FLIGHT);
-        System.out.printf("[HEAD-TO-HEAD] Solr:          %5d ms  (%.0f r/s)%n", solrMs, solrRps);
-        System.out.printf("[HEAD-TO-HEAD] Elasticsearch: %5d ms  (%.0f r/s)%n", esMs, esRps);
-        System.out.printf("[HEAD-TO-HEAD] Solr wins by %.1fx%n", esMs / (double) solrMs);
+        System.out.printf("[HEAD-TO-HEAD] Solr:          %5d ms  (%.0f r/s)%n", solr.wallMs, solrRps);
+        System.out.printf("[HEAD-TO-HEAD] Elasticsearch: %5d ms  (%.0f r/s)%n", es.wallMs, esRps);
+        System.out.printf("[HEAD-TO-HEAD] Solr wins by %.1fx%n", es.wallMs / (double) solr.wallMs);
+        System.out.println("[HEAD-TO-HEAD] per-phase metrics (cpu, alloc, gc):");
+        System.out.println(solr.delta.toTable("solr", solr.wallMs));
+        System.out.println(es.delta.toTable("elasticsearch", es.wallMs));
+        long solrMs = solr.wallMs;
+        long esMs = es.wallMs;
 
         // The whole point of using HTTP/2 + concurrent in-flight is to beat
         // a single connection bulk indexer. Allow a 10% margin so a slow
         // CI runner with cold JIT can't flake.
         assertThat(solrMs).isLessThanOrEqualTo((long) (esMs * 0.9));
+    }
+
+    /**
+     * Wrap a timed phase with JFR recording and CPU/alloc/GC delta capture.
+     * The phase returns its own wall-clock measurement so we stay consistent
+     * with the existing timing (System.nanoTime around the work, not around
+     * setup or teardown).
+     */
+    private static PhaseResult measure(String phase, TimedWork work) throws Exception {
+        try (JfrRecorder ignored = JfrRecorder.start(phase)) {
+            BenchmarkMetrics.Snapshot before = BenchmarkMetrics.capture();
+            long wallMs = work.run();
+            BenchmarkMetrics.Delta delta = BenchmarkMetrics.capture().minus(before);
+            return new PhaseResult(wallMs, delta);
+        }
+    }
+
+    @FunctionalInterface
+    private interface TimedWork {
+        long run() throws Exception;
+    }
+
+    private static final class PhaseResult {
+        final long wallMs;
+        final BenchmarkMetrics.Delta delta;
+        PhaseResult(long wallMs, BenchmarkMetrics.Delta delta) {
+            this.wallMs = wallMs;
+            this.delta = delta;
+        }
     }
 
     private long timeSolr(List<SinkRecord> records) {

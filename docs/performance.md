@@ -222,9 +222,14 @@ volume justifies it, the right fix is to move the conversion **upstream**:
 - **Acceptable:** run the SMT in the Debezium source connector instead
   of the Solr sink connector. Same CPU cost but on a different worker
   pool, freeing the sink task for indexing throughput.
-- **Last resort:** optimise the SMT itself — pool the `WKBReader`, reuse
-  the output map, etc. ~80 LOC of careful refactor for a single-digit
-  percent win.
+- **Last resort:** optimise the SMT itself. Note that `WKB_READER` and
+  `LATLON_BUILDER` are already `ThreadLocal`-pooled
+  (`WKBToLatLon.java` lines 33–36), so the obvious "pool the reader"
+  win is already taken. The remaining costs are the unavoidable per-record
+  `SourceRecord` allocation and the Map/Struct copy that Kafka Connect's
+  SMT contract requires (you cannot mutate the input record). Removing
+  those would mean rewriting the SMT as a Connect *transformation chain*
+  position-aware mutator — invasive, ~150 LOC, single-digit percent win.
 
 Recommendation: **investigate before optimising.** Profile the kstreams
 output with the SMT in vs out (`mvn test -Pperf` with and without

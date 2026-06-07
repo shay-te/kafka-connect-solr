@@ -63,6 +63,12 @@ public final class SolrRecordConverter {
     // schema-substitution fallback.
     private final Map<Schema, Map<String, FieldEncoder[]>> planCache = new IdentityHashMap<>();
 
+    // Caches the recursive leaf-field count per top-level STRUCT schema so the initial
+    // SolrInputDocument LinkedHashMap is sized once correctly for nested schemas — without
+    // this, a STRUCT containing nested STRUCTs would only see the top-level field count
+    // and the backing map would resize partway through population.
+    private final Map<Schema, Integer> leafCountCache = new IdentityHashMap<>();
+
     // Per-record byte accumulator; reset on every convert() entry. Safe under the single-thread
     // task contract Kafka Connect enforces (same as the other instance state in this class).
     private long convertedBytes;
@@ -145,12 +151,38 @@ public final class SolrRecordConverter {
     private int estimateFieldHint(Object value, Schema schema) {
         int base = mappingVersion.isEmpty() ? 1 : 2;
         if (schema != null && schema.type() == Schema.Type.STRUCT) {
-            return base + schema.fields().size();
+            return base + leafFieldCount(schema);
         }
         if (value instanceof Map) {
             return base + ((Map<?, ?>) value).size();
         }
         return base + 8;
+    }
+
+    /**
+     * Recursive count of leaf fields produced by a STRUCT schema when flattened to dotted
+     * Solr field names. A nested {@code customer{name, address{city,state,zip}}} schema
+     * has 2 top-level fields but produces 4 leaves — sizing the doc's backing map by
+     * top-level count alone would trigger a rehash on the 4th put.
+     *
+     * <p>Cached per Schema identity since CDC pipelines reuse the same Schema instance
+     * across millions of records.</p>
+     */
+    private int leafFieldCount(Schema schema) {
+        Integer cached = leafCountCache.get(schema);
+        if (cached != null) return cached;
+        int n = computeLeafCount(schema);
+        leafCountCache.put(schema, n);
+        return n;
+    }
+
+    private static int computeLeafCount(Schema schema) {
+        if (schema.type() != Schema.Type.STRUCT) return 1;
+        int n = 0;
+        for (Field field : schema.fields()) {
+            n += computeLeafCount(field.schema());
+        }
+        return n;
     }
 
     public Object deriveId(SinkRecord record) {

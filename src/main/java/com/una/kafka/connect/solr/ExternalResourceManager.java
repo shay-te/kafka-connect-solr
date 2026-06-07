@@ -64,8 +64,8 @@ public final class ExternalResourceManager {
                 return collections != null && collections.contains(collection);
             }
             CoreAdminResponse status = CoreAdminRequest.getStatus(collection, client);
-            return status.getCoreStatus(collection) != null
-                    && !status.getCoreStatus(collection).asMap(0).isEmpty();
+            org.apache.solr.common.util.NamedList<Object> coreStatus = status.getCoreStatus(collection);
+            return coreStatus != null && !coreStatus.asMap(0).isEmpty();
         } catch (Exception e) {
             log.warn("Resource existence probe for '{}' failed: {}", collection, e.getMessage());
             return false;

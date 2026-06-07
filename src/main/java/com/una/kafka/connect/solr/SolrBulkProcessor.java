@@ -118,7 +118,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
             buf.bytes += preComputedBytes >= 0 ? preComputedBytes : estimateBytes(doc);
         }
         queueDepth.increment();
-        maybeFlush(buf);
+        maybeFlush(collection, buf);
     }
 
     public void delete(String collection, String id, OffsetState offsetState) {
@@ -126,7 +126,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
         buf.ids.add(id);
         buf.states.add(offsetState);
         queueDepth.increment();
-        maybeFlushDelete(buf);
+        maybeFlushDelete(collection, buf);
     }
 
     private UpsertBuffer upsertBufferFor(String collection) {
@@ -157,18 +157,22 @@ public final class SolrBulkProcessor implements AutoCloseable {
         return buf;
     }
 
-    private void maybeFlush(UpsertBuffer touched) {
+    private void maybeFlush(String collection, UpsertBuffer touched) {
+        // Per-buffer threshold: flush ONLY this collection's buffer. Avoids dragging
+        // every other collection's small batch out as a tiny Solr request when one
+        // collection is hot. Global thresholds (linger / maxBufferedRecords) below
+        // still fire flushAsync() for everyone.
         if (touched.docs.size() >= batchSize
                 || (bulkSizeBytes > 0 && touched.bytes >= bulkSizeBytes)) {
-            flushAsync();
+            flushOneUpsert(collection, touched);
             return;
         }
         checkGlobalThresholds();
     }
 
-    private void maybeFlushDelete(DeleteBuffer touched) {
+    private void maybeFlushDelete(String collection, DeleteBuffer touched) {
         if (touched.ids.size() >= batchSize) {
-            flushAsync();
+            flushOneDelete(collection, touched);
             return;
         }
         checkGlobalThresholds();
@@ -189,27 +193,36 @@ public final class SolrBulkProcessor implements AutoCloseable {
 
     public void flushAsync() {
         for (Map.Entry<String, UpsertBuffer> e : upsertBuffers.entrySet()) {
-            UpsertBuffer buf = e.getValue();
-            if (buf.docs.isEmpty()) continue;
-            String collection = e.getKey();
-            List<SolrInputDocument> docs = buf.docs;
-            List<OffsetState> states = buf.states;
-            buf.docs = new ArrayList<>(batchSize);
-            buf.states = new ArrayList<>(batchSize);
-            buf.bytes = 0L;
-            submit(() -> sendUpsert(collection, docs, states));
+            flushOneUpsert(e.getKey(), e.getValue());
         }
         for (Map.Entry<String, DeleteBuffer> e : deleteBuffers.entrySet()) {
-            DeleteBuffer buf = e.getValue();
-            if (buf.ids.isEmpty()) continue;
-            String collection = e.getKey();
-            List<String> ids = buf.ids;
-            List<OffsetState> states = buf.states;
-            buf.ids = new ArrayList<>(batchSize);
-            buf.states = new ArrayList<>(batchSize);
-            submit(() -> sendDelete(collection, ids, states));
+            flushOneDelete(e.getKey(), e.getValue());
         }
         lastFlushNanos = System.nanoTime();
+    }
+
+    /**
+     * Targeted flush of a single collection's upsert buffer. Does NOT update
+     * {@code lastFlushNanos} — the linger.ms clock is global and must keep ticking
+     * so cold buffers eventually get drained by {@link #checkGlobalThresholds()}.
+     */
+    private void flushOneUpsert(String collection, UpsertBuffer buf) {
+        if (buf.docs.isEmpty()) return;
+        List<SolrInputDocument> docs = buf.docs;
+        List<OffsetState> states = buf.states;
+        buf.docs = new ArrayList<>(batchSize);
+        buf.states = new ArrayList<>(batchSize);
+        buf.bytes = 0L;
+        submit(() -> sendUpsert(collection, docs, states));
+    }
+
+    private void flushOneDelete(String collection, DeleteBuffer buf) {
+        if (buf.ids.isEmpty()) return;
+        List<String> ids = buf.ids;
+        List<OffsetState> states = buf.states;
+        buf.ids = new ArrayList<>(batchSize);
+        buf.states = new ArrayList<>(batchSize);
+        submit(() -> sendDelete(collection, ids, states));
     }
 
     public void flushSync() {
