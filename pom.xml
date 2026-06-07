@@ -169,7 +169,10 @@
                 <configuration>
                     <!-- Performance tests are heavy and timing-sensitive; opt in via -Pperf. -->
                     <excludedGroups>performance</excludedGroups>
-                    <argLine>@{surefireArgLine}</argLine>
+                    <!-- jdk.attach.allowAttachSelf=true lets Mockito's Byte Buddy self-attach on
+                         macOS JDK installations where the default is false (without this, every
+                         mock(...) call dies with "Could not self-attach to current VM"). -->
+                    <argLine>@{surefireArgLine} -Djdk.attach.allowAttachSelf=true</argLine>
                 </configuration>
             </plugin>
             <plugin>
@@ -177,7 +180,7 @@
                 <artifactId>maven-failsafe-plugin</artifactId>
                 <version>3.1.2</version>
                 <configuration>
-                    <argLine>@{failsafeArgLine}</argLine>
+                    <argLine>@{failsafeArgLine} -Djdk.attach.allowAttachSelf=true</argLine>
                 </configuration>
                 <executions>
                     <execution>

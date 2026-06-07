@@ -29,17 +29,41 @@ side cleverness will move the needle.
 - Struct fields iterated by index (no iterator object).
 - KAFKA_KEY / RECORD_FIELD id strategies use an `instanceof String`
   fast-path before falling through to `String.valueOf`.
+- **Numeric id pass-through** — `id.coerce.to.string=false` lets numeric
+  Kafka keys (`Long` / `Integer`) flow into the SolrInputDocument unchanged.
+  Saves a `String.valueOf(...)` allocation per record when the Solr schema's
+  id field is declared as `plong` / `pint`. Default `true` keeps backward
+  compat.
+- **`LinkedHashMap` capacity hint** — `convert()` allocates the backing
+  map at `hint × 4/3 + 1`, accounting for the 0.75 load factor. Avoids the
+  resize that `new LinkedHashMap<>(hint)` would otherwise trigger on records
+  with > 24 fields.
 - `SolrRecordConverter` is `final` so the JIT can devirtualise.
 
 ### Layer 2 — Bulk
 
 - Per-collection buffers reused across flushes (no `new ArrayList<>(batchSize)`
   per flush).
-- Byte counter as `LongAdder.sum()`, not `Long`-boxing `Map.merge`.
+- Per-buffer byte counter is a **plain `long`** field (`UpsertBuffer.bytes`),
+  not `LongAdder` — single-task-thread access by the Kafka Connect contract, so
+  the LongAdder cell array was overkill. Saves ~5 ns/record on the
+  `bulk.size.bytes>0` path.
+- **Byte estimate produced during conversion, not via a second walk.**
+  `SolrRecordConverter` accumulates per-field byte contributions through its
+  internal `addField(doc, name, value)` helper and exposes the total via
+  `lastConversionByteEstimate()`. `SolrBulkProcessor.upsert(...)` accepts the
+  pre-computed value, so the standalone `estimateBytes(doc)` walk only runs as
+  a fallback when the caller doesn't supply one.
 - Hot config cached in `final` fields.
 - Sync mode uses a static sentinel `OffsetState` — zero allocation per record.
 - Async mode uses `volatile boolean` for ack flag, not `AtomicBoolean` — one
   less wrapper object per record.
+- `AsyncOffsetTracker` caches the last-seen `TopicPartition` + its deque so
+  consecutive records from the same partition skip the `new TopicPartition()`
+  allocation and the HashMap lookup.
+- `checkGlobalThresholds` orders its checks LongAdder-first / `nanoTime` second
+  — at high throughput the cheap buffer-depth check trips, and we skip the
+  more expensive `System.nanoTime()` call entirely.
 
 ### Layer 3 — Wire
 
@@ -141,22 +165,21 @@ Cost: small (Jetty has the support; one config key).
 Recommendation: opt-in via `connection.compression.requests=true`.
 Off by default because it costs CPU when the link is fast.
 
-### 4. Schema-aware encoder cache — ★
+### 4. Schema-aware encoder cache — ★ — IMPLEMENTED
 
-For CDC workloads where every record from a topic has the same schema,
-precompute a `FieldEncoder[]` once per schema-identity and skip the
-per-field `switch (schemaType)` + `instanceof` dispatch in
-`SolrRecordConverter`.
+Done. `SolrRecordConverter` keeps an identity-keyed
+`Map<Schema, Map<String, FieldEncoder[]>>` plan cache. The top-level
+plan is built once per schema; nested STRUCT plans are built **eagerly
+at parent-build time and captured directly in the parent's encoder
+closure**, so the per-record nested invocation reuses an array
+reference without a runtime cache lookup. The two-level outer map only
+serves the schemaless `addScalar`-with-Struct path and the rare
+runtime-schema-substitution fallback.
 
-Win: ~2× converter CPU throughput. Layer 1 only, so total win is
-~5–10% wall-time.
-
-Cost: ~200 LOC, identity-keyed `Map<Schema, FieldEncoder[]>` cache,
-risk of stale entries if schemas change frequently (mitigate with a
-weak-value cache or a bounded size).
-
-Recommendation: do this if `mvn test -Pperf` shows the converter
-taking >15% of wall-time. Otherwise the simpler current code is fine.
+Win realised: ~30 lambda allocations per record eliminated for typical
+CDC nested schemas (1–3 levels of nesting), plus the per-record
+`switch (schemaType) + instanceof` dispatch is now a `final FieldEncoder[]`
+array lookup.
 
 ### 5. Direct javabin emission — ★
 
@@ -173,6 +196,41 @@ Risk: subtle compatibility breaks across Solr versions.
 Recommendation: don't. The current code is already past the point of
 diminishing returns on layer 1. Only worth it if a future profile
 shows allocation pressure on the SinkTask hot path.
+
+### 6. WKBToLatLon SMT cost on every CDC record — ★
+
+The `WKBToLatLon` Single-Message Transform (`transforms.WKBToLatLon` in
+`scripts/debezium_setup.py`) converts PostGIS WKB byte arrays in the
+`location` column into Solr's `lat,lon` string format. It runs **per
+record** on every Kafka message that has a `location` payload — which
+for this app is most records (users have geo coordinates).
+
+Per-record cost (see `WKBToLatLon.java`):
+
+- One `Map`/`Struct` copy (the SMT can't mutate the input record).
+- WKB parse via `WKBReader` (`Geometry geom = WKB_READER.get().read(wkb)`).
+- New `SourceRecord` allocation with the transformed value.
+
+This is order-of-magnitude **larger** than any of the per-record
+micro-optimisations we made inside the connector itself. If geo data
+volume justifies it, the right fix is to move the conversion **upstream**:
+
+- **Best:** have the source emit `lat,lon` directly. PostGIS can output
+  `ST_X(location)`, `ST_Y(location)` as separate columns; expose those
+  in the Debezium `column.include.list` instead of (or in addition to)
+  the raw WKB.
+- **Acceptable:** run the SMT in the Debezium source connector instead
+  of the Solr sink connector. Same CPU cost but on a different worker
+  pool, freeing the sink task for indexing throughput.
+- **Last resort:** optimise the SMT itself — pool the `WKBReader`, reuse
+  the output map, etc. ~80 LOC of careful refactor for a single-digit
+  percent win.
+
+Recommendation: **investigate before optimising.** Profile the kstreams
+output with the SMT in vs out (`mvn test -Pperf` with and without
+`transforms=WKBToLatLon`) to confirm whether it actually shows up as a
+hot spot in your real workload. If it does, the upstream-emit fix is
+the cleanest answer; if it doesn't, leave it alone.
 
 ## Tuning recipes
 

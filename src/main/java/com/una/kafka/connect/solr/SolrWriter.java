@@ -40,6 +40,12 @@ public final class SolrWriter implements AutoCloseable {
     private final String externalVersionHeader;
     private final BehaviorOnNullValues behaviorOnNullValues;
     private final BehaviorOnMalformed behaviorOnMalformed;
+    // Cached so we can skip the per-record schemaManager.evolveIfNeeded(...) call entirely
+    // when auto-evolve is off (the default + the production-recommended setting).
+    private final boolean schemaEvolveEnabled;
+    // Global schema.ignore=true means "don't use Connect's record schema for destination mapping",
+    // which implies "don't auto-evolve the Solr schema either". Honoured alongside topic.schema.ignore.
+    private final boolean schemaIgnoreGlobal;
 
     private final boolean partitionFanout;
     private final SolrBulkProcessor sharedProcessor;
@@ -66,6 +72,8 @@ public final class SolrWriter implements AutoCloseable {
         this.externalVersionHeader = config.externalVersionHeader();
         this.behaviorOnNullValues = config.behaviorOnNullValues();
         this.behaviorOnMalformed = config.behaviorOnMalformed();
+        this.schemaEvolveEnabled = config.schemaAutoEvolve();
+        this.schemaIgnoreGlobal = config.schemaIgnore();
 
         this.partitionFanout = config.partitionFanoutEnabled();
         if (partitionFanout) {
@@ -120,7 +128,9 @@ public final class SolrWriter implements AutoCloseable {
         resources.ensure(collection);
         SolrBulkProcessor bulk = processorFor(record);
         try {
-            if (topicsIgnoreSchemaEmpty || !topicsIgnoreSchema.contains(topic)) {
+            if (schemaEvolveEnabled
+                    && !schemaIgnoreGlobal
+                    && (topicsIgnoreSchemaEmpty || !topicsIgnoreSchema.contains(topic))) {
                 schemaManager.evolveIfNeeded(collection, record.valueSchema());
             }
             boolean keyIgnored = keyIgnoreGlobal

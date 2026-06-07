@@ -169,16 +169,46 @@ curl -s -XPOST -H "Content-Type: application/json" \
 
 | Tool | Version | Why |
 |---|---|---|
-| **JDK** | **11** (LTS) | Source/target is Java 11 for broad worker compatibility. Build also runs cleanly on JDK 17. Avoid JDK 24+ — Mockito 5.5 (used by the test suite) doesn't yet support that bytecode level and unit tests will fail to load. |
+| **JDK** | **OpenJDK 11 (LTS)** or **OpenJDK 17 (LTS)** | Source/target is Java 11. Both 11 and 17 are tested in CI. **JDK 22+ will fail** — JaCoCo 0.8.11 (our coverage tool) only understands class files up to Java 21; Mockito 5.5 also breaks on JDK 24+. **Use JDK 11 or 17.** |
 | **Maven** | 3.6+ | The wrapper isn't checked in; install via Homebrew (`brew install maven`), SDKMAN, or your package manager. |
 | **Docker** | any recent version | **Only required for integration tests** (`*IT.java` — they spin up a real Solr 9.4 container via Testcontainers). Skip with `-DskipITs` if you don't have Docker. |
 
-Pin the JDK explicitly before building if you have multiple installed:
+#### Which JDK distribution?
+
+**Any OpenJDK 11 or 17 build works.** The connector doesn't depend on any vendor-specific JDK features. In recommendation order:
+
+1. **Eclipse Temurin** (formerly AdoptOpenJDK) — most widely used OpenJDK build, free for any use, maintained by the Eclipse Foundation. [adoptium.net](https://adoptium.net) or `brew install --cask temurin@11`.
+2. **Amazon Corretto** — AWS's OpenJDK build, free, well-tested for production. `brew install --cask corretto@11`.
+3. **Azul Zulu** — another widely-used free OpenJDK distribution.
+
+**Oracle JDK** also works technically, but its license requires a paid Oracle Java SE Subscription for any commercial / production use as of JDK 17+. **Stick to OpenJDK builds unless you have a specific Oracle support contract.**
+
+You do **not** need GraalVM, OpenJ9, or any other JVM variant for the build — vanilla HotSpot is correct.
+
+#### Pin the JDK explicitly
+
+`mvn` picks up whatever `JAVA_HOME` points to, and on macOS that often defaults to the newest JDK you have installed. Verify before each build:
 
 ```bash
-export JAVA_HOME=$(/usr/libexec/java_home -v 11)    # macOS
+# macOS (with /usr/libexec/java_home)
+export JAVA_HOME=$(/usr/libexec/java_home -v 11)
 export PATH="$JAVA_HOME/bin:$PATH"
-java -version    # should print 11.x
+java -version    # MUST print 11.x (or 17.x). 22+ will not work.
+
+# Linux with SDKMAN (recommended)
+sdk install java 11.0.21-tem    # Temurin 11
+sdk use java 11.0.21-tem
+java -version
+
+# Linux with system package manager
+sudo apt install temurin-11-jdk    # Debian/Ubuntu with Adoptium repo
+sudo dnf install java-11-openjdk-devel   # RHEL/Fedora
+```
+
+If you can't get the right JDK on the PATH globally, prefix the build command:
+
+```bash
+JAVA_HOME=/path/to/jdk-11 PATH=/path/to/jdk-11/bin:$PATH mvn -B clean verify
 ```
 
 ### The one command that runs everything
@@ -238,6 +268,16 @@ mvn -B test -Pperf
 2. Unzip `target/kafka-connect-solr-<version>-package.zip` under your Connect worker's `plugin.path` (e.g. `/opt/connect/plugins/kafka-connect-solr/`).
 3. Restart the Connect worker.
 4. `POST` a connector config to `http://<worker>:8083/connectors` (see [Quick start](#quick-start-standalone-solr) above).
+
+### Troubleshooting the build
+
+| Symptom | Fix |
+|---|---|
+| `Mockito couldn't self-attach to current VM` / `IllegalStateException: Could not self-attach` | The pom already passes `-Djdk.attach.allowAttachSelf=true` via the Surefire/Failsafe `argLine`. If you've **overridden** `argLine` (e.g. in a profile or via `-DargLine=`), make sure you keep that property, otherwise the JDK refuses self-attach and every Mockito `mock(...)` call fails. |
+| `Unsupported class file major version N` from JaCoCo | You're building on JDK 22+. JaCoCo 0.8.11 (pinned in `pom.xml`) only understands up to Java 21 bytecode. Switch to JDK 11 or 17, or bump the JaCoCo plugin to 0.8.13+ in `pom.xml`. |
+| Failsafe ITs hang or fail with "Cannot connect to Docker daemon" | The integration tests spin up real Solr containers via Testcontainers. Either start Docker Desktop / colima / podman first, or run unit tests only: `mvn -B test -DskipITs`. |
+| `Rule violated for bundle … instructions covered ratio is 0.94, expected minimum is 0.95` | The coverage gate is failing. JaCoCo's HTML report at `target/site/jacoco/index.html` shows which class regressed. Either add tests for the uncovered lines or, if the gate itself needs adjusting, modify `pom.xml`'s `check-coverage` execution. |
+| `Tests run: N, Failures: 0, Errors: 0` but the build still fails | Something in the `verify` phase after tests is failing — typically the coverage gate (see above) or the assembly plugin. Scroll back in the log for `[ERROR]` lines.|
 
 ## Tuning for throughput
 

@@ -170,6 +170,31 @@ class SolrWriterFullCoverageTest {
     }
 
     @Test
+    void globalSchemaIgnoreSkipsEvolve() throws Exception {
+        // schema.ignore=true is the global counterpart of topic.schema.ignore — it must also
+        // disable auto-evolve regardless of whether topic.schema.ignore is set. The connector
+        // honours both: SolrWriter.write checks (schemaEvolveEnabled && !schemaIgnoreGlobal && ...).
+        Map<String, String> o = new HashMap<>();
+        o.put(SolrSinkConfig.SCHEMA_IGNORE_CONFIG, "true");
+        o.put(SolrSinkConfig.SCHEMA_AUTO_EVOLVE_CONFIG, "true");
+        SolrClient client = mock(SolrClient.class);
+        SolrWriter w = new SolrWriter(client, cfg(o));
+        Schema s = SchemaBuilder.struct().field("x", Schema.STRING_SCHEMA).build();
+        Struct v = new Struct(s).put("x", "y");
+        w.write(rec(s, v, new ConnectHeaders(), null));
+        w.flush();
+
+        org.mockito.ArgumentCaptor<org.apache.solr.client.solrj.SolrRequest> cap =
+                org.mockito.ArgumentCaptor.forClass(org.apache.solr.client.solrj.SolrRequest.class);
+        verify(client, atLeastOnce()).request(cap.capture(), anyString());
+        for (org.apache.solr.client.solrj.SolrRequest<?> req : cap.getAllValues()) {
+            assertThat(req).isNotInstanceOf(org.apache.solr.client.solrj.request.schema.SchemaRequest.AddField.class);
+            assertThat(req).isNotInstanceOf(org.apache.solr.client.solrj.request.schema.SchemaRequest.Fields.class);
+        }
+        w.close();
+    }
+
+    @Test
     void topicKeyIgnoreSetForcesIdFallback() throws Exception {
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.TOPIC_KEY_IGNORE_CONFIG, "users");

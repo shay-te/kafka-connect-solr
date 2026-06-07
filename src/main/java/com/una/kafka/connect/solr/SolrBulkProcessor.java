@@ -115,7 +115,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
         buf.docs.add(doc);
         buf.states.add(offsetState);
         if (bulkSizeBytes > 0) {
-            buf.bytes.add(preComputedBytes >= 0 ? preComputedBytes : estimateBytes(doc));
+            buf.bytes += preComputedBytes >= 0 ? preComputedBytes : estimateBytes(doc);
         }
         queueDepth.increment();
         maybeFlush(buf);
@@ -159,7 +159,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
 
     private void maybeFlush(UpsertBuffer touched) {
         if (touched.docs.size() >= batchSize
-                || (bulkSizeBytes > 0 && touched.bytes.sum() >= bulkSizeBytes)) {
+                || (bulkSizeBytes > 0 && touched.bytes >= bulkSizeBytes)) {
             flushAsync();
             return;
         }
@@ -196,7 +196,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
             List<OffsetState> states = buf.states;
             buf.docs = new ArrayList<>(batchSize);
             buf.states = new ArrayList<>(batchSize);
-            buf.bytes.reset();
+            buf.bytes = 0L;
             submit(() -> sendUpsert(collection, docs, states));
         }
         for (Map.Entry<String, DeleteBuffer> e : deleteBuffers.entrySet()) {
@@ -429,7 +429,9 @@ public final class SolrBulkProcessor implements AutoCloseable {
     private static final class UpsertBuffer {
         List<SolrInputDocument> docs;
         List<OffsetState> states;
-        final LongAdder bytes = new LongAdder();
+        // Single-task-thread access (Kafka Connect contract) — plain long is faster than
+        // LongAdder here because there's no concurrent writer to amortize across cells.
+        long bytes;
 
         UpsertBuffer(int batchSize) {
             this.docs = new ArrayList<>(batchSize);
