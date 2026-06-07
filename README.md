@@ -165,12 +165,79 @@ curl -s -XPOST -H "Content-Type: application/json" \
 
 ## Building
 
+### Prerequisites
+
+| Tool | Version | Why |
+|---|---|---|
+| **JDK** | **11** (LTS) | Source/target is Java 11 for broad worker compatibility. Build also runs cleanly on JDK 17. Avoid JDK 24+ — Mockito 5.5 (used by the test suite) doesn't yet support that bytecode level and unit tests will fail to load. |
+| **Maven** | 3.6+ | The wrapper isn't checked in; install via Homebrew (`brew install maven`), SDKMAN, or your package manager. |
+| **Docker** | any recent version | **Only required for integration tests** (`*IT.java` — they spin up a real Solr 9.4 container via Testcontainers). Skip with `-DskipITs` if you don't have Docker. |
+
+Pin the JDK explicitly before building if you have multiple installed:
+
 ```bash
-mvn -B clean package        # builds target/kafka-connect-solr-*.jar + assembly zip
-mvn -B test                 # unit tests
-mvn -B verify               # Testcontainers IT against real Solr
-mvn -B test -Pperf          # perf + stress tests (incl. head-to-head vs Elasticsearch)
+export JAVA_HOME=$(/usr/libexec/java_home -v 11)    # macOS
+export PATH="$JAVA_HOME/bin:$PATH"
+java -version    # should print 11.x
 ```
+
+### The one command that runs everything
+
+```bash
+mvn -B clean verify
+```
+
+This is the canonical build script. It:
+
+1. Compiles `src/main` (Java 11 source + target)
+2. Runs all unit tests (`*Test.java` via Surefire, ~400 tests, ~30 s)
+3. Runs all Testcontainers integration tests (`*IT.java` via Failsafe — starts ephemeral Solr 9.4 containers, ~30 s)
+4. Merges JaCoCo coverage exec files (UT + IT) and writes `target/site/jacoco/index.html`
+5. Enforces coverage gates: **≥ 95 % instruction, ≥ 85 % branch** — build fails if either drops
+6. Builds the deployable artifact: `target/kafka-connect-solr-<version>-package.zip` (the connector + all runtime dependencies, ready to drop into a Connect worker's `plugins/` directory)
+7. Builds the plain JAR: `target/kafka-connect-solr-<version>.jar`
+
+End-to-end: ~1–2 minutes on a 4-core laptop with Docker already running.
+
+### Faster feedback loops
+
+```bash
+# Compile + unit tests only (skip Docker-backed ITs and coverage gate)
+mvn -B test -DskipITs
+
+# Single test class
+mvn -B test -Dtest=SolrRecordConverterNumericIdTest
+
+# Single test method
+mvn -B test -Dtest=SolrRecordConverterNumericIdTest#coerceFalseKafkaKeyLongPassesThrough
+
+# Skip tests entirely (rebuilding the deployable zip after a code-only change)
+mvn -B clean package -DskipTests
+```
+
+### Performance / stress benchmarks (opt-in)
+
+```bash
+# Head-to-head perf vs Elasticsearch (spins up both containers; tagged @perf so the
+# default suite excludes them).
+mvn -B test -Pperf
+```
+
+### What you get
+
+| Path | What it is |
+|---|---|
+| `target/kafka-connect-solr-<version>.jar` | The connector classes only (no dependencies). Use this if your worker already has SolrJ on its classpath. |
+| `target/kafka-connect-solr-<version>-package.zip` | The shipping artifact — connector + SolrJ + Jackson + JTS + SLF4J API. **This is what you copy to the Connect worker's `plugin.path` directory.** |
+| `target/site/jacoco/index.html` | Coverage report, view in a browser. |
+| `target/surefire-reports/` and `target/failsafe-reports/` | Per-test XML/TXT reports. |
+
+### Deploying the connector
+
+1. Run `mvn -B clean verify`.
+2. Unzip `target/kafka-connect-solr-<version>-package.zip` under your Connect worker's `plugin.path` (e.g. `/opt/connect/plugins/kafka-connect-solr/`).
+3. Restart the Connect worker.
+4. `POST` a connector config to `http://<worker>:8083/connectors` (see [Quick start](#quick-start-standalone-solr) above).
 
 ## Tuning for throughput
 

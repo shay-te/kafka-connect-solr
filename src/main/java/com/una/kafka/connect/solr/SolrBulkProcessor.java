@@ -100,10 +100,23 @@ public final class SolrBulkProcessor implements AutoCloseable {
     }
 
     public void upsert(String collection, SolrInputDocument doc, OffsetState offsetState) {
+        upsert(collection, doc, -1L, offsetState);
+    }
+
+    /**
+     * Same as {@link #upsert(String, SolrInputDocument, OffsetState)} but accepts a pre-computed
+     * byte estimate from the converter — when present and {@code bulk.size.bytes > 0} we skip the
+     * second-pass {@link #estimateBytes} walk of the doc.
+     *
+     * @param preComputedBytes a non-negative byte estimate or {@code -1} to compute on demand.
+     */
+    public void upsert(String collection, SolrInputDocument doc, long preComputedBytes, OffsetState offsetState) {
         UpsertBuffer buf = upsertBufferFor(collection);
         buf.docs.add(doc);
         buf.states.add(offsetState);
-        if (bulkSizeBytes > 0) buf.bytes.add(estimateBytes(doc));
+        if (bulkSizeBytes > 0) {
+            buf.bytes.add(preComputedBytes >= 0 ? preComputedBytes : estimateBytes(doc));
+        }
         queueDepth.increment();
         maybeFlush(buf);
     }

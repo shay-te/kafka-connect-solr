@@ -16,6 +16,7 @@ import org.apache.solr.common.SolrInputDocument;
 import java.nio.ByteBuffer;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -50,10 +51,21 @@ public final class SolrRecordConverter {
     // When false, numeric Kafka keys / extracted ids are passed to Solr as primitives instead
     // of being String-ified — requires the Solr id field to be declared as a numeric type.
     private final boolean idCoerceToString;
+    // Enabled when bulk.size.bytes > 0; accumulates an approximate byte estimate during
+    // conversion so SolrBulkProcessor can skip its second-pass estimateBytes(doc) walk.
+    private final boolean bulkSizeTracking;
 
     // Identity-keyed: CDC pipelines reuse Schema instances, so reference equality is enough
-    // and skips Schema.equals/hashCode per record.
-    private final Map<Schema, FieldEncoder[]> planCache = new IdentityHashMap<>();
+    // and skips Schema.equals/hashCode per record. Inner map keys are the field-name prefix —
+    // top-level uses "", nested STRUCTs use the dotted parent path. Eager recursive build
+    // captures nested plans inside their parent's encoder closure so the common case never
+    // hits this map at runtime; the cache only serves schemaless nested calls and the
+    // schema-substitution fallback.
+    private final Map<Schema, Map<String, FieldEncoder[]>> planCache = new IdentityHashMap<>();
+
+    // Per-record byte accumulator; reset on every convert() entry. Safe under the single-thread
+    // task contract Kafka Connect enforces (same as the other instance state in this class).
+    private long convertedBytes;
 
     public SolrRecordConverter(SolrSinkConfig config) {
         this.idStrategy = config.idStrategy();
@@ -64,6 +76,7 @@ public final class SolrRecordConverter {
         this.idFieldPath = this.idField == null ? new String[0] : this.idField.split("\\.");
         this.mappingVersion = config.mappingVersion() == null ? "" : config.mappingVersion();
         this.idCoerceToString = config.idCoerceToString();
+        this.bulkSizeTracking = config.bulkSizeBytes() > 0;
     }
 
     public SolrInputDocument convert(SinkRecord record) {
@@ -77,10 +90,13 @@ public final class SolrRecordConverter {
         }
         Schema schema = record.valueSchema();
         int hint = estimateFieldHint(value, schema);
-        SolrInputDocument doc = new SolrInputDocument(new LinkedHashMap<>(hint));
-        doc.addField(ID_FIELD, deriveId(record, keyIgnored));
+        // Capacity must account for the 0.75 load factor or the (hint)-th put will trigger
+        // a rehash. `hint * 4 / 3 + 1` keeps the resulting tableSizeFor() threshold > hint.
+        SolrInputDocument doc = new SolrInputDocument(new LinkedHashMap<>(hint * 4 / 3 + 1));
+        if (bulkSizeTracking) convertedBytes = 16;
+        addField(doc, ID_FIELD, deriveId(record, keyIgnored));
         if (!mappingVersion.isEmpty()) {
-            doc.addField(MAPPING_VERSION_FIELD, mappingVersion);
+            addField(doc, MAPPING_VERSION_FIELD, mappingVersion);
         }
 
         if (value instanceof Struct) {
@@ -95,6 +111,35 @@ public final class SolrRecordConverter {
             applyAtomicUpdate(doc);
         }
         return doc;
+    }
+
+    /**
+     * Byte estimate of the most recent {@link #convert} call, or {@code -1} when
+     * {@code bulk.size.bytes} is unset / non-positive (no tracking performed).
+     * Approximate — slightly under-counts atomic-update wrapping overhead; close enough
+     * for bulk-size threshold purposes.
+     */
+    public long lastConversionByteEstimate() {
+        return bulkSizeTracking ? convertedBytes : -1L;
+    }
+
+    /**
+     * Single point of entry for adding a field to the document so that the byte accumulator
+     * sees every value. When tracking is off this is a thin {@code doc.addField} wrapper that
+     * JIT inlines away.
+     */
+    void addField(SolrInputDocument doc, String name, Object value) {
+        doc.addField(name, value);
+        if (!bulkSizeTracking) return;
+        convertedBytes += (long) name.length() * 2L;
+        if (value == null) return;
+        if (value instanceof CharSequence) {
+            convertedBytes += (long) ((CharSequence) value).length() * 2L;
+        } else if (value instanceof Number || value instanceof Boolean) {
+            convertedBytes += 16L;
+        } else {
+            convertedBytes += 32L;
+        }
     }
 
     private int estimateFieldHint(Object value, Schema schema) {
@@ -147,27 +192,38 @@ public final class SolrRecordConverter {
         }
     }
 
-    private void populateFromStruct(SolrInputDocument doc, Struct struct, Schema schema, String prefix) {
+    void populateFromStruct(SolrInputDocument doc, Struct struct, Schema schema, String prefix) {
         if (struct == null || schema == null) {
             return;
         }
-        FieldEncoder[] plan = planFor(schema, prefix);
+        FieldEncoder[] plan = getOrBuildPlan(schema, prefix);
         for (int i = 0; i < plan.length; i++) {
             plan[i].encode(this, doc, struct);
         }
     }
 
-    private FieldEncoder[] planFor(Schema schema, String prefix) {
-        // Nested plans are prefix-sensitive; only cache the top-level prefix="" case.
-        if (!prefix.isEmpty()) {
-            return buildPlan(schema, prefix);
+    /**
+     * Returns the cached plan for {@code (schema, prefix)} or builds + caches one.
+     * Used by:
+     *   - the top-level convert() path (prefix=""), which hits once per schema;
+     *   - the schemaless STRUCT-in-Map path in addScalar (prefix=parent name);
+     *   - the rare runtime-schema-substitution fallback in the STRUCT encoder.
+     *
+     * The common nested case is served by eagerly built plans captured in the STRUCT
+     * encoder closure — that path bypasses this map entirely.
+     */
+    FieldEncoder[] getOrBuildPlan(Schema schema, String prefix) {
+        Map<String, FieldEncoder[]> byPrefix = planCache.get(schema);
+        if (byPrefix == null) {
+            byPrefix = new HashMap<>(2);
+            planCache.put(schema, byPrefix);
         }
-        FieldEncoder[] cached = planCache.get(schema);
-        if (cached == null) {
-            cached = buildPlan(schema, prefix);
-            planCache.put(schema, cached);
+        FieldEncoder[] plan = byPrefix.get(prefix);
+        if (plan == null) {
+            plan = buildPlan(schema, prefix);
+            byPrefix.put(prefix, plan);
         }
-        return cached;
+        return plan;
     }
 
     private FieldEncoder[] buildPlan(Schema schema, String prefix) {
@@ -193,12 +249,12 @@ public final class SolrRecordConverter {
                 case Time.LOGICAL_NAME:
                     return (conv, doc, src) -> {
                         Object v = src.get(field);
-                        if (v != null) doc.addField(name, ((java.util.Date) v).toInstant().toString());
+                        if (v != null) conv.addField(doc, name, ((java.util.Date) v).toInstant().toString());
                     };
                 case Decimal.LOGICAL_NAME:
                     return (conv, doc, src) -> {
                         Object v = src.get(field);
-                        if (v != null) doc.addField(name, v.toString());
+                        if (v != null) conv.addField(doc, name, v.toString());
                     };
                 default:
                     break;
@@ -206,9 +262,19 @@ public final class SolrRecordConverter {
         }
         switch (sub.type()) {
             case STRUCT:
+                // Eagerly recurse: build (and cache) the nested plan now so the runtime path
+                // can invoke it directly without a per-record getOrBuildPlan lookup. Falls back
+                // to a runtime lookup only when the inbound Struct carries a different Schema
+                // instance than the declared one (rare; covered by getOrBuildPlan's cache).
+                final Schema declaredNested = sub;
+                final FieldEncoder[] nestedPlan = getOrBuildPlan(declaredNested, name);
                 return (conv, doc, src) -> {
                     Struct nested = (Struct) src.get(field);
-                    if (nested != null) conv.populateFromStruct(doc, nested, nested.schema(), name);
+                    if (nested == null) return;
+                    FieldEncoder[] plan = nested.schema() == declaredNested
+                            ? nestedPlan
+                            : conv.getOrBuildPlan(nested.schema(), name);
+                    for (int i = 0; i < plan.length; i++) plan[i].encode(conv, doc, nested);
                 };
             case ARRAY:
                 Schema elementSchema = sub.valueSchema();
@@ -235,8 +301,8 @@ public final class SolrRecordConverter {
             case BYTES:
                 return (conv, doc, src) -> {
                     Object v = src.get(field);
-                    if (v instanceof byte[]) doc.addField(name, BASE64.encodeToString((byte[]) v));
-                    else if (v instanceof ByteBuffer) doc.addField(name, BASE64.encodeToString(((ByteBuffer) v).array()));
+                    if (v instanceof byte[]) conv.addField(doc, name, BASE64.encodeToString((byte[]) v));
+                    else if (v instanceof ByteBuffer) conv.addField(doc, name, BASE64.encodeToString(((ByteBuffer) v).array()));
                 };
             case STRING:
             case INT8: case INT16: case INT32: case INT64:
@@ -245,7 +311,7 @@ public final class SolrRecordConverter {
             default:
                 return (conv, doc, src) -> {
                     Object v = src.get(field);
-                    if (v != null) doc.addField(name, v);
+                    if (v != null) conv.addField(doc, name, v);
                 };
         }
     }
@@ -259,10 +325,10 @@ public final class SolrRecordConverter {
                 case Timestamp.LOGICAL_NAME:
                 case Date.LOGICAL_NAME:
                 case Time.LOGICAL_NAME:
-                    doc.addField(name, ((java.util.Date) value).toInstant().toString());
+                    addField(doc, name, ((java.util.Date) value).toInstant().toString());
                     return;
                 case Decimal.LOGICAL_NAME:
-                    doc.addField(name, value.toString());
+                    addField(doc, name, value.toString());
                     return;
                 default:
                     break;
@@ -274,17 +340,17 @@ public final class SolrRecordConverter {
         } else if (value instanceof Map) {
             populateFromMap(doc, (Map<?, ?>) value, name);
         } else if (value instanceof byte[]) {
-            doc.addField(name, BASE64.encodeToString((byte[]) value));
+            addField(doc, name, BASE64.encodeToString((byte[]) value));
         } else if (value instanceof ByteBuffer) {
-            doc.addField(name, BASE64.encodeToString(((ByteBuffer) value).array()));
+            addField(doc, name, BASE64.encodeToString(((ByteBuffer) value).array()));
         } else if (value instanceof java.util.Date) {
-            doc.addField(name, ((java.util.Date) value).toInstant().toString());
+            addField(doc, name, ((java.util.Date) value).toInstant().toString());
         } else {
-            doc.addField(name, value);
+            addField(doc, name, value);
         }
     }
 
-    private void populateFromMap(SolrInputDocument doc, Map<?, ?> map, String prefix) {
+    void populateFromMap(SolrInputDocument doc, Map<?, ?> map, String prefix) {
         if (compactMapEntries) {
             for (Map.Entry<?, ?> entry : map.entrySet()) {
                 Object key = entry.getKey();
@@ -308,7 +374,7 @@ public final class SolrRecordConverter {
             LinkedHashMap<String, Object> pair = new LinkedHashMap<>(4);
             pair.put(MAP_ENTRY_KEY, entry.getKey());
             pair.put(MAP_ENTRY_VALUE, entry.getValue());
-            doc.addField(prefix, pair);
+            addField(doc, prefix, pair);
         }
     }
 
@@ -353,9 +419,9 @@ public final class SolrRecordConverter {
                 case Timestamp.LOGICAL_NAME:
                 case Date.LOGICAL_NAME:
                 case Time.LOGICAL_NAME:
-                    return (conv, doc, name, value) -> doc.addField(name, ((java.util.Date) value).toInstant().toString());
+                    return (conv, doc, name, value) -> conv.addField(doc, name, ((java.util.Date) value).toInstant().toString());
                 case Decimal.LOGICAL_NAME:
-                    return (conv, doc, name, value) -> doc.addField(name, value.toString());
+                    return (conv, doc, name, value) -> conv.addField(doc, name, value.toString());
                 default:
                     break;
             }
@@ -370,11 +436,11 @@ public final class SolrRecordConverter {
                 return (conv, doc, name, value) -> conv.populateFromMap(doc, (Map<?, ?>) value, name);
             case BYTES:
                 return (conv, doc, name, value) -> {
-                    if (value instanceof byte[]) doc.addField(name, BASE64.encodeToString((byte[]) value));
-                    else if (value instanceof ByteBuffer) doc.addField(name, BASE64.encodeToString(((ByteBuffer) value).array()));
+                    if (value instanceof byte[]) conv.addField(doc, name, BASE64.encodeToString((byte[]) value));
+                    else if (value instanceof ByteBuffer) conv.addField(doc, name, BASE64.encodeToString(((ByteBuffer) value).array()));
                 };
             default:
-                return (conv, doc, name, value) -> doc.addField(name, value);
+                return (conv, doc, name, value) -> conv.addField(doc, name, value);
         }
     }
 
@@ -385,13 +451,13 @@ public final class SolrRecordConverter {
         } else if (value instanceof Map) {
             conv.populateFromMap(doc, (Map<?, ?>) value, name);
         } else if (value instanceof byte[]) {
-            doc.addField(name, BASE64.encodeToString((byte[]) value));
+            conv.addField(doc, name, BASE64.encodeToString((byte[]) value));
         } else if (value instanceof ByteBuffer) {
-            doc.addField(name, BASE64.encodeToString(((ByteBuffer) value).array()));
+            conv.addField(doc, name, BASE64.encodeToString(((ByteBuffer) value).array()));
         } else if (value instanceof java.util.Date) {
-            doc.addField(name, ((java.util.Date) value).toInstant().toString());
+            conv.addField(doc, name, ((java.util.Date) value).toInstant().toString());
         } else {
-            doc.addField(name, value);
+            conv.addField(doc, name, value);
         }
     }
 

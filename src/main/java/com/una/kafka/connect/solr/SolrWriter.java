@@ -128,7 +128,9 @@ public final class SolrWriter implements AutoCloseable {
             SolrInputDocument doc = converter.convert(record, keyIgnored);
             applyExternalVersion(doc, record);
             OffsetState state = offsetTracker.track(record);
-            bulk.upsert(collection, doc, state);
+            // Converter accumulates the byte estimate during field building when bulk.size.bytes>0,
+            // letting SolrBulkProcessor skip the second-pass walk of the doc.
+            bulk.upsert(collection, doc, converter.lastConversionByteEstimate(), state);
         } catch (DataException de) {
             handleMalformed(record, de);
         }
