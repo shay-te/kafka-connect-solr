@@ -145,6 +145,9 @@ class SolrWriterFullCoverageTest {
 
     @Test
     void schemaIgnoreSetSkipsEvolve() throws Exception {
+        // Topic "users" is in the schema-ignore set -> schemaManager.evolveIfNeeded must not fire
+        // and therefore no schema-related SolrJ requests should hit the client. The only request
+        // we expect is the UpdateRequest for the doc itself.
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.TOPIC_SCHEMA_IGNORE_CONFIG, "users,other");
         o.put(SolrSinkConfig.SCHEMA_AUTO_EVOLVE_CONFIG, "true");
@@ -154,6 +157,15 @@ class SolrWriterFullCoverageTest {
         Struct v = new Struct(s).put("x", "y");
         w.write(rec(s, v, new ConnectHeaders(), null));
         w.flush();
+
+        // Capture all SolrJ requests. None may be a schema-mutating request.
+        org.mockito.ArgumentCaptor<org.apache.solr.client.solrj.SolrRequest> cap =
+                org.mockito.ArgumentCaptor.forClass(org.apache.solr.client.solrj.SolrRequest.class);
+        verify(client, atLeastOnce()).request(cap.capture(), anyString());
+        for (org.apache.solr.client.solrj.SolrRequest<?> req : cap.getAllValues()) {
+            assertThat(req).isNotInstanceOf(org.apache.solr.client.solrj.request.schema.SchemaRequest.AddField.class);
+            assertThat(req).isNotInstanceOf(org.apache.solr.client.solrj.request.schema.SchemaRequest.Fields.class);
+        }
         w.close();
     }
 

@@ -65,14 +65,14 @@ class SolrSchemaManagerCoverageTest {
     void addFieldFailureIsSwallowedAndMarkedKnown() throws Exception {
         SolrClient client = mock(SolrClient.class);
         // First request is the schema probe (returns empty fields). Subsequent AddField requests throw.
-        java.util.concurrent.atomic.AtomicInteger n = new java.util.concurrent.atomic.AtomicInteger();
-        when(client.request(any(SolrRequest.class), any())).thenAnswer(inv -> {
-            if (n.getAndIncrement() == 0) return emptySchema();
+        java.util.concurrent.atomic.AtomicInteger callCount = new java.util.concurrent.atomic.AtomicInteger();
+        when(client.request(any(SolrRequest.class), any())).thenAnswer(invocation -> {
+            if (callCount.getAndIncrement() == 0) return emptySchema();
             throw new RuntimeException("add failed");
         });
-        SolrSchemaManager m = new SolrSchemaManager(client, cfg(new HashMap<>()));
-        Schema s = SchemaBuilder.struct().field("y", Schema.INT64_SCHEMA).build();
-        m.evolveIfNeeded("c", s);
+        SolrSchemaManager schemaManager = new SolrSchemaManager(client, cfg(new HashMap<>()));
+        Schema valueSchema = SchemaBuilder.struct().field("y", Schema.INT64_SCHEMA).build();
+        schemaManager.evolveIfNeeded("c", valueSchema);
         // No exception leaked; both probe and AddField fired.
         verify(client, times(2)).request(any(SolrRequest.class), any());
     }

@@ -19,6 +19,8 @@ import java.util.concurrent.ConcurrentMap;
 public final class SolrWriter implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(SolrWriter.class);
+    // Solr's reserved optimistic-concurrency field; set when external-version header is present.
+    private static final String SOLR_VERSION_FIELD = "_version_";
 
     private final SolrClient client;
     private final SolrSinkConfig config;
@@ -142,7 +144,7 @@ public final class SolrWriter implements AutoCloseable {
         }
         Long version = coerceLong(h.value());
         if (version != null) {
-            doc.setField("_version_", version);
+            doc.setField(SOLR_VERSION_FIELD, version);
         }
     }
 

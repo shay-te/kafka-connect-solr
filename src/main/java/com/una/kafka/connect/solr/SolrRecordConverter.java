@@ -31,6 +31,15 @@ public final class SolrRecordConverter {
     private static final ThreadLocal<java.util.ArrayList<org.apache.solr.common.SolrInputField>> AU_SNAPSHOT =
             ThreadLocal.withInitial(java.util.ArrayList::new);
 
+    private static final String ID_FIELD = "id";
+    private static final String MAPPING_VERSION_FIELD = "_mapping_version";
+    // Map-entry wrap keys (non-compact mode): each unrooted Map value is rendered as
+    // a {"key":..., "value":...} object so the dotted-prefix layout stays unambiguous.
+    private static final String MAP_ENTRY_KEY = "key";
+    private static final String MAP_ENTRY_VALUE = "value";
+    // Solr atomic-update modifier — see Solr docs "Atomic Updates".
+    private static final String ATOMIC_SET = "set";
+
     private final IdStrategy idStrategy;
     private final WriteMethod writeMethod;
     private final boolean keyIgnoreGlobal;
@@ -65,9 +74,9 @@ public final class SolrRecordConverter {
         Schema schema = record.valueSchema();
         int hint = estimateFieldHint(value, schema);
         SolrInputDocument doc = new SolrInputDocument(new LinkedHashMap<>(hint));
-        doc.addField("id", deriveId(record, keyIgnored));
+        doc.addField(ID_FIELD, deriveId(record, keyIgnored));
         if (!mappingVersion.isEmpty()) {
-            doc.addField("_mapping_version", mappingVersion);
+            doc.addField(MAPPING_VERSION_FIELD, mappingVersion);
         }
 
         if (value instanceof Struct) {
@@ -288,9 +297,11 @@ public final class SolrRecordConverter {
             return;
         }
         for (Map.Entry<?, ?> entry : map.entrySet()) {
-            Map<String, Object> pair = new LinkedHashMap<>(2);
-            pair.put("key", entry.getKey());
-            pair.put("value", entry.getValue());
+            // initialCapacity=4 avoids the resize that LinkedHashMap(2) would trigger
+            // on the second put (loadFactor 0.75 × 2 = threshold 1.5 < 2).
+            LinkedHashMap<String, Object> pair = new LinkedHashMap<>(4);
+            pair.put(MAP_ENTRY_KEY, entry.getKey());
+            pair.put(MAP_ENTRY_VALUE, entry.getValue());
             doc.addField(prefix, pair);
         }
     }
@@ -303,10 +314,10 @@ public final class SolrRecordConverter {
         for (int i = 0, n = snap.size(); i < n; i++) {
             org.apache.solr.common.SolrInputField f = snap.get(i);
             String name = f.getName();
-            if ("id".equals(name)) continue;
+            if (ID_FIELD.equals(name)) continue;
             Object original = f.getValue();
             if (original == null) continue;
-            doc.setField(name, Map.of("set", original));
+            doc.setField(name, Map.of(ATOMIC_SET, original));
         }
         snap.clear();
     }

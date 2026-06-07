@@ -13,11 +13,32 @@ public final class AsyncOffsetTracker implements OffsetTracker {
 
     private final Map<TopicPartition, Deque<OffsetState>> pending = new HashMap<>();
 
+    // Hot-path cache: same (topic, partition) typically repeats for many consecutive records,
+    // so we avoid allocating a fresh TopicPartition just to look up the deque each time.
+    private String lastTopic;
+    private int lastPartition = -1;
+    private TopicPartition lastTp;
+    private Deque<OffsetState> lastDeque;
+
     @Override
     public synchronized OffsetState track(SinkRecord record) {
-        TopicPartition tp = new TopicPartition(record.topic(), record.kafkaPartition());
+        String topic = record.topic();
+        int partition = record.kafkaPartition();
+        TopicPartition tp;
+        Deque<OffsetState> queue;
+        if (partition == lastPartition && topic.equals(lastTopic) && lastDeque != null) {
+            tp = lastTp;
+            queue = lastDeque;
+        } else {
+            tp = new TopicPartition(topic, partition);
+            queue = pending.computeIfAbsent(tp, k -> new ArrayDeque<>());
+            lastTopic = topic;
+            lastPartition = partition;
+            lastTp = tp;
+            lastDeque = queue;
+        }
         OffsetState state = new OffsetState(tp, record.kafkaOffset());
-        pending.computeIfAbsent(tp, k -> new ArrayDeque<>()).add(state);
+        queue.add(state);
         return state;
     }
 
@@ -48,6 +69,12 @@ public final class AsyncOffsetTracker implements OffsetTracker {
     @Override
     public synchronized void closePartition(TopicPartition partition) {
         pending.remove(partition);
+        if (partition.equals(lastTp)) {
+            lastTp = null;
+            lastDeque = null;
+            lastTopic = null;
+            lastPartition = -1;
+        }
     }
 
     public synchronized int pendingCount() {

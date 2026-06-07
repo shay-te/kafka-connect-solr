@@ -162,8 +162,14 @@ public final class SolrBulkProcessor implements AutoCloseable {
     }
 
     private void checkGlobalThresholds() {
-        long age = System.nanoTime() - lastFlushNanos;
-        if (age >= lingerNanos || queueDepth.sum() >= maxBufferedRecords) {
+        // queueDepth.sum() is a cheap LongAdder read; nanoTime is ~5× more expensive.
+        // At high throughput maxBufferedRecords trips long before lingerNanos, so checking
+        // it first lets us short-circuit out without the nanoTime call.
+        if (queueDepth.sum() >= maxBufferedRecords) {
+            flushAsync();
+            return;
+        }
+        if (System.nanoTime() - lastFlushNanos >= lingerNanos) {
             flushAsync();
         }
     }
