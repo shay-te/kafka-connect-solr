@@ -47,6 +47,9 @@ public final class SolrRecordConverter {
     private final String idField;
     private final String[] idFieldPath;
     private final String mappingVersion;
+    // When false, numeric Kafka keys / extracted ids are passed to Solr as primitives instead
+    // of being String-ified — requires the Solr id field to be declared as a numeric type.
+    private final boolean idCoerceToString;
 
     // Identity-keyed: CDC pipelines reuse Schema instances, so reference equality is enough
     // and skips Schema.equals/hashCode per record.
@@ -60,6 +63,7 @@ public final class SolrRecordConverter {
         this.idField = config.idField();
         this.idFieldPath = this.idField == null ? new String[0] : this.idField.split("\\.");
         this.mappingVersion = config.mappingVersion() == null ? "" : config.mappingVersion();
+        this.idCoerceToString = config.idCoerceToString();
     }
 
     public SolrInputDocument convert(SinkRecord record) {
@@ -104,11 +108,11 @@ public final class SolrRecordConverter {
         return base + 8;
     }
 
-    public String deriveId(SinkRecord record) {
+    public Object deriveId(SinkRecord record) {
         return deriveId(record, keyIgnoreGlobal);
     }
 
-    public String deriveId(SinkRecord record, boolean keyIgnored) {
+    public Object deriveId(SinkRecord record, boolean keyIgnored) {
         IdStrategy strategy = idStrategy;
         if (keyIgnored && strategy == IdStrategy.KAFKA_KEY) {
             strategy = IdStrategy.TOPIC_PARTITION_OFFSET;
@@ -119,13 +123,15 @@ public final class SolrRecordConverter {
                 if (key == null) {
                     throw new DataException("id.strategy=KAFKA_KEY but record key is null");
                 }
-                return key instanceof String ? (String) key : String.valueOf(key);
+                if (key instanceof String) return key;
+                return idCoerceToString ? String.valueOf(key) : key;
             case RECORD_FIELD:
                 Object id = extractField(record.value(), idFieldPath);
                 if (id == null) {
                     throw new DataException("id.strategy=RECORD_FIELD but field '" + idField + "' is null");
                 }
-                return id instanceof String ? (String) id : String.valueOf(id);
+                if (id instanceof String) return id;
+                return idCoerceToString ? String.valueOf(id) : id;
             case TOPIC_PARTITION_OFFSET: {
                 StringBuilder sb = TPO_BUILDER.get();
                 sb.setLength(0);

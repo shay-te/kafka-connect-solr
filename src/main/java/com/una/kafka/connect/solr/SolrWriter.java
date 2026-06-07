@@ -208,6 +208,9 @@ public final class SolrWriter implements AutoCloseable {
                     log.warn("Tombstone has null key, cannot delete; skipping");
                     return;
                 }
+                // Solr's deleteById accepts only String ids — even when the id field is plong,
+                // the wire API requires String form. Solr coerces "12345" → 12345 server-side.
+                // So we String-coerce here regardless of id.coerce.to.string.
                 String id = key instanceof String ? (String) key : String.valueOf(key);
                 bulk.delete(collection, id, offsetTracker.track(record));
                 return;
