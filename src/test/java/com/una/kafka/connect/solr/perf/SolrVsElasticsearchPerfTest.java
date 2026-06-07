@@ -120,23 +120,16 @@ class SolrVsElasticsearchPerfTest {
         System.out.println("[HEAD-TO-HEAD] per-phase metrics (cpu, alloc, gc):");
         System.out.println(solr.delta.toTable("solr", solr.wallMs));
         System.out.println(es.delta.toTable("elasticsearch", es.wallMs));
-        long solrMs = solr.wallMs;
-        long esMs = es.wallMs;
 
         // The whole point of using HTTP/2 + concurrent in-flight is to beat
         // a single connection bulk indexer. Allow a 10% margin so a slow
         // CI runner with cold JIT can't flake.
-        assertThat(solrMs).isLessThanOrEqualTo((long) (esMs * 0.9));
+        assertThat(solr.wallMs).isLessThanOrEqualTo((long) (es.wallMs * 0.9));
     }
 
-    /**
-     * Wrap a timed phase with JFR recording and CPU/alloc/GC delta capture.
-     * The phase returns its own wall-clock measurement so we stay consistent
-     * with the existing timing (System.nanoTime around the work, not around
-     * setup or teardown).
-     */
+    /** Wrap a timed phase with JFR + CPU/alloc/GC delta capture. */
     private static PhaseResult measure(String phase, TimedWork work) throws Exception {
-        try (JfrRecorder ignored = JfrRecorder.start(phase)) {
+        try (JfrRecorder recorder = JfrRecorder.start(phase)) {
             BenchmarkMetrics.Snapshot before = BenchmarkMetrics.capture();
             long wallMs = work.run();
             BenchmarkMetrics.Delta delta = BenchmarkMetrics.capture().minus(before);

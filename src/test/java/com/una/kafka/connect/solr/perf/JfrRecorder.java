@@ -3,7 +3,6 @@ package com.una.kafka.connect.solr.perf;
 import jdk.jfr.Configuration;
 import jdk.jfr.Recording;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
