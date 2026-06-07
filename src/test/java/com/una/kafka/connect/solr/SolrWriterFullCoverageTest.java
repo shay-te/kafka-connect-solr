@@ -56,7 +56,9 @@ class SolrWriterFullCoverageTest {
     private SolrInputDocument captureFirstDoc(SolrClient client) throws Exception {
         ArgumentCaptor<UpdateRequest> captor = ArgumentCaptor.forClass(UpdateRequest.class);
         verify(client, atLeastOnce()).request(captor.capture(), anyString());
-        List<SolrInputDocument> docs = captor.getValue().getDocuments();
+        List<UpdateRequest> requests = captor.getAllValues();
+        assertThat(requests).as("expected at least one UpdateRequest").isNotEmpty();
+        List<SolrInputDocument> docs = requests.get(0).getDocuments();
         assertThat(docs).isNotNull().isNotEmpty();
         return docs.get(0);
     }

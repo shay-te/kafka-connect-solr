@@ -5,10 +5,6 @@ import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.errors.RetriableException;
 import org.apache.kafka.connect.sink.SinkRecord;
-import org.apache.solr.client.solrj.SolrClient;
-import org.apache.solr.client.solrj.SolrQuery;
-import org.apache.solr.client.solrj.impl.Http2SolrClient;
-import org.apache.solr.client.solrj.response.QueryResponse;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -21,7 +17,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
@@ -64,19 +59,8 @@ class SolrEndToEndIT {
         return p;
     }
 
-    /** Poll Solr until `query` returns {@code expected} hits, or fail after 5s. */
     private static void awaitHits(String query, long expected) throws Exception {
-        long deadline = System.currentTimeMillis() + 5_000L;
-        long last = -1;
-        try (SolrClient verifier = new Http2SolrClient.Builder(baseUrl).build()) {
-            while (System.currentTimeMillis() < deadline) {
-                last = verifier.query("e2e", new SolrQuery(query).setRows(0))
-                        .getResults().getNumFound();
-                if (last == expected) return;
-                Thread.sleep(50);
-            }
-        }
-        assertThat(last).as("expected %d hits for '%s'", expected, query).isEqualTo(expected);
+        SolrTestSupport.awaitHits(baseUrl, "e2e", query, expected);
     }
 
     @Test
@@ -141,7 +125,7 @@ class SolrEndToEndIT {
                         "async-" + i, s, v, 100L + i));
             }
             task.put(batch);
-            // Sync drain via flush, then exercise the async preCommit path.
+            // Sync drain via flush(), then exercise the async preCommit() path on an already-drained buffer.
             task.flush(new HashMap<>());
             task.preCommit(new HashMap<>());
             awaitHits("id:async-*", 5L);

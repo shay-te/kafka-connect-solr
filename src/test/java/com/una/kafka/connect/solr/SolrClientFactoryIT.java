@@ -1,7 +1,6 @@
 package com.una.kafka.connect.solr;
 
 import org.apache.solr.client.solrj.SolrClient;
-import org.apache.solr.client.solrj.SolrQuery;
 import org.apache.solr.client.solrj.impl.ConcurrentUpdateHttp2SolrClient;
 import org.apache.solr.client.solrj.impl.Http2SolrClient;
 import org.apache.solr.client.solrj.impl.LBHttp2SolrClient;
@@ -64,9 +63,7 @@ class SolrClientFactoryIT {
             req.add(doc);
             req.setCommitWithin(100);
             req.process(client, "factory");
-            Thread.sleep(300);
-            assertThat(client.query("factory", new SolrQuery("id:f-single")).getResults().getNumFound())
-                    .isEqualTo(1L);
+            SolrTestSupport.awaitHits(baseUrl, "factory", "id:f-single", 1L);
         } finally {
             client.close();
         }
