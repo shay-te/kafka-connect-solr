@@ -59,7 +59,7 @@ class RealDataFlowIT {
     }
 
     /** Task configured exactly like the production Solr sink (debezium_setup.py:_add_solr_connector). */
-    private SolrSinkTask productionTask() {
+    private SolrSinkTask productionTask(String... extra) {
         Map<String, String> p = new LinkedHashMap<>();
         p.put(SolrSinkConfig.SOLR_URL_CONFIG, baseUrl);
         p.put(SolrSinkConfig.SOLR_COLLECTION_CONFIG, CORE);
@@ -70,6 +70,7 @@ class RealDataFlowIT {
         p.put(SolrSinkConfig.BEHAVIOR_ON_NULL_VALUES_CONFIG, "delete");
         p.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "UNUSED"); // standalone core already exists
         p.put(SolrSinkConfig.MAX_RETRIES_CONFIG, "0");                  // surface errors immediately
+        for (int i = 0; i < extra.length; i += 2) p.put(extra[i], extra[i + 1]);
         SolrSinkTask task = new SolrSinkTask();
         task.start(p);
         return task;
@@ -295,4 +296,91 @@ class RealDataFlowIT {
         }
     }
 
+    // ---------------- next-hunt: edge cases against real Solr ----------------
+
+    @Test
+    void mappingVersionFromValueDoesNotDuplicate() throws Exception {
+        // Same class as the id bug: the connector stamps _mapping_version from config; if the
+        // value ALSO carries _mapping_version it must not produce a second value.
+        SolrSinkTask task = productionTask(SolrSinkConfig.MAPPING_VERSION_CONFIG, "idx-v1");
+        try {
+            Map<String, Object> v = new LinkedHashMap<>();
+            v.put("id", 60);
+            v.put("_mapping_version", "STALE");
+            v.put("name", "x");
+            put(task, "60", v);
+            commit();
+            assertThat(fetch("60").getFieldValues("_mapping_version")).containsExactly("idx-v1");
+        } finally {
+            task.stop();
+        }
+    }
+
+    @Test
+    void hugeMultiValuedArrayIndexes() throws Exception {
+        SolrSinkTask task = productionTask();
+        try {
+            Map<String, Object> v = realUserDocument(70);
+            List<Map<String, Object>> promises = new ArrayList<>();
+            for (int i = 0; i < 5000; i++) promises.add(objMap("id", (long) i, "status", 2L));
+            v.put("promises", promises);
+            put(task, "70", v);
+            commit();
+            assertThat(fetch("70").getFieldValues("promises.id")).hasSize(5000);
+        } finally {
+            task.stop();
+        }
+    }
+
+    @Test
+    void unicodeAndSpecialCharacterIdsRoundTrip() throws Exception {
+        SolrSinkTask task = productionTask();
+        try {
+            String[] ids = {"usr-💙", "usr/42", "usr 42", "日本語"};
+            for (String id : ids) {
+                Map<String, Object> v = new LinkedHashMap<>();
+                v.put("id", id);
+                v.put("name", "n");
+                put(task, id, v);
+            }
+            commit();
+            assertThat(numFound("*:*")).as("all special-char ids must index").isEqualTo(ids.length);
+        } finally {
+            task.stop();
+        }
+    }
+
+    @Test
+    void extremeNumericValuesIndex() throws Exception {
+        SolrSinkTask task = productionTask();
+        try {
+            Map<String, Object> v = new LinkedHashMap<>();
+            v.put("id", 80);
+            v.put("big_long", Long.MAX_VALUE);
+            v.put("neg_long", Long.MIN_VALUE);
+            v.put("zero", 0);
+            v.put("big_double", 1.7976931348623157E308);
+            put(task, "80", v);
+            commit();
+            SolrDocument d = fetch("80");
+            assertThat(d.getFirstValue("big_long")).isEqualTo(Long.MAX_VALUE);
+            assertThat(d.getFirstValue("neg_long")).isEqualTo(Long.MIN_VALUE);
+        } finally {
+            task.stop();
+        }
+    }
+
+    @Test
+    void redeliveredRecordIsIdempotent() throws Exception {
+        SolrSinkTask task = productionTask();
+        try {
+            Map<String, Object> v = realUserDocument(90);
+            put(task, "90", v);   // first delivery
+            put(task, "90", v);   // same record redelivered (restart / offset replay)
+            commit();
+            assertThat(numFound("id:90")).as("replay must not duplicate the doc").isEqualTo(1);
+        } finally {
+            task.stop();
+        }
+    }
 }

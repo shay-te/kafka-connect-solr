@@ -1,5 +1,7 @@
 package com.una.kafka.connect.solr;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.una.kafka.connect.solr.SolrSinkConfig.BehaviorOnMalformed;
 import com.una.kafka.connect.solr.SolrSinkConfig.BehaviorOnNullValues;
 import org.apache.kafka.common.TopicPartition;
@@ -21,6 +23,10 @@ public final class SolrWriter implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(SolrWriter.class);
     // Solr's reserved optimistic-concurrency field; set when external-version header is present.
     private static final String SOLR_VERSION_FIELD = "_version_";
+    // Marks a versioned soft-delete tombstone. App queries must filter -_deleted:true.
+    static final String DELETED_MARKER_FIELD = "_deleted";
+    // Serializes the record value verbatim for the stored-only source field (see sourceField).
+    private static final ObjectMapper SOURCE_MAPPER = new ObjectMapper();
 
     private final SolrClient client;
     private final SolrSinkConfig config;
@@ -39,6 +45,8 @@ public final class SolrWriter implements AutoCloseable {
     private final boolean externalVersioningEnabled;
     private final String externalVersionHeader;
     private final String kafkaOffsetVersionField;
+    private final String sourceField;
+    private final String[] sourceExcludePrefixes;
     private final BehaviorOnNullValues behaviorOnNullValues;
     private final BehaviorOnMalformed behaviorOnMalformed;
     // Cached so we can skip the per-record schemaManager.evolveIfNeeded(...) call entirely
@@ -72,6 +80,8 @@ public final class SolrWriter implements AutoCloseable {
         this.externalVersioningEnabled = config.externalVersioningEnabled();
         this.externalVersionHeader = config.externalVersionHeader();
         this.kafkaOffsetVersionField = config.kafkaOffsetVersionField();
+        this.sourceField = config.sourceField();
+        this.sourceExcludePrefixes = config.sourceExcludeFields().toArray(new String[0]);
         this.behaviorOnNullValues = config.behaviorOnNullValues();
         this.behaviorOnMalformed = config.behaviorOnMalformed();
         this.schemaEvolveEnabled = config.schemaAutoEvolve();
@@ -138,6 +148,12 @@ public final class SolrWriter implements AutoCloseable {
             boolean keyIgnored = keyIgnoreGlobal
                     || (!topicsIgnoreKeyEmpty && topicsIgnoreKey.contains(topic));
             SolrInputDocument doc = converter.convert(record, keyIgnored);
+            if (!sourceField.isEmpty()) {
+                // Stored-only raw document so queries can return the original nested shape that
+                // Solr's flattening drops. Index-only denormalized fields are excluded so the
+                // stored document stays the clean original shape.
+                doc.setField(sourceField, toSourceJson(record.value(), sourceExcludePrefixes));
+            }
             applyExternalVersion(doc, record);
             if (!kafkaOffsetVersionField.isEmpty()) {
                 // Stamp the Kafka offset as a monotonic (per-key) version. With a Solr
@@ -152,6 +168,33 @@ public final class SolrWriter implements AutoCloseable {
         } catch (DataException de) {
             handleMalformed(record, de);
         }
+    }
+
+    private static String toSourceJson(Object value, String[] excludePrefixes) {
+        try {
+            Object toSerialize = value;
+            if (excludePrefixes.length > 0 && value instanceof java.util.Map) {
+                java.util.Map<?, ?> source = (java.util.Map<?, ?>) value;
+                java.util.Map<Object, Object> filtered = new java.util.LinkedHashMap<>(source.size());
+                for (java.util.Map.Entry<?, ?> entry : source.entrySet()) {
+                    if (!startsWithAny(String.valueOf(entry.getKey()), excludePrefixes)) {
+                        filtered.put(entry.getKey(), entry.getValue());
+                    }
+                }
+                toSerialize = filtered;
+            }
+            return SOURCE_MAPPER.writeValueAsString(toSerialize);
+        } catch (JsonProcessingException e) {
+            // Malformed value -> DataException routes it through behavior.on.malformed (DLQ/skip).
+            throw new DataException("Failed to serialize record value for the source field", e);
+        }
+    }
+
+    private static boolean startsWithAny(String name, String[] prefixes) {
+        for (String prefix : prefixes) {
+            if (name.startsWith(prefix)) return true;
+        }
+        return false;
     }
 
     private void applyExternalVersion(SolrInputDocument doc, SinkRecord record) {
@@ -232,7 +275,20 @@ public final class SolrWriter implements AutoCloseable {
                 // the wire API requires String form. Solr coerces "12345" → 12345 server-side.
                 // So we String-coerce here regardless of id.coerce.to.string.
                 String id = key instanceof String ? (String) key : String.valueOf(key);
-                bulk.delete(collection, id, offsetTracker.track(record));
+                if (!kafkaOffsetVersionField.isEmpty()) {
+                    // Versioned soft-delete: a hard deleteById would leave no version, so a late
+                    // OLDER update could resurrect a deleted user. Instead write a tombstone doc
+                    // carrying the delete's offset — the version constraint then rejects the stale
+                    // update. App queries MUST filter out -_deleted:true; a cleanup job purges old
+                    // tombstones. See solr_wiring.md §8.1.
+                    SolrInputDocument tomb = new SolrInputDocument();
+                    tomb.addField("id", id);
+                    tomb.addField(kafkaOffsetVersionField, record.kafkaOffset());
+                    tomb.addField(DELETED_MARKER_FIELD, true);
+                    bulk.upsert(collection, tomb, -1L, offsetTracker.track(record));
+                } else {
+                    bulk.delete(collection, id, offsetTracker.track(record));
+                }
                 return;
             default:
                 throw new DataException("Unknown null value behavior: " + behaviorOnNullValues);

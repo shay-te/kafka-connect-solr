@@ -257,6 +257,12 @@ public final class SolrRecordConverter {
         return plan;
     }
 
+    // Top-level fields the converter sets itself; a value's own copy must not be re-emitted.
+    private boolean isReservedTopLevelField(String name) {
+        return ID_FIELD.equals(name)
+                || (!mappingVersion.isEmpty() && MAPPING_VERSION_FIELD.equals(name));
+    }
+
     private FieldEncoder[] buildPlan(Schema schema, String prefix) {
         List<Field> fields = schema.fields();
         if (fields.isEmpty()) {
@@ -266,10 +272,10 @@ public final class SolrRecordConverter {
         List<FieldEncoder> plan = new java.util.ArrayList<>(fields.size());
         for (int i = 0, n = fields.size(); i < n; i++) {
             Field field = fields.get(i);
-            // Skip the value's own top-level id field: Solr's uniqueKey 'id' is set from
-            // deriveId (Kafka key / record field), so re-emitting it here would produce two
-            // 'id' values and Solr rejects the whole doc ("multiple values for uniqueKey").
-            if (top && ID_FIELD.equals(field.name())) {
+            // Skip connector-managed top-level fields (id, _mapping_version): they are set by the
+            // converter (deriveId / mapping.version), so re-emitting the value's copy would produce
+            // two values and Solr rejects the whole doc ("multiple values for uniqueKey").
+            if (top && isReservedTopLevelField(field.name())) {
                 continue;
             }
             String name = top ? field.name() : prefix + "." + field.name();
@@ -402,8 +408,8 @@ public final class SolrRecordConverter {
             for (Map.Entry<?, ?> entry : map.entrySet()) {
                 Object key = entry.getKey();
                 String keyStr = key instanceof String ? (String) key : String.valueOf(key);
-                // Skip the value's own top-level id — Solr's uniqueKey is set from deriveId.
-                if (top && ID_FIELD.equals(keyStr)) {
+                // Skip connector-managed top-level fields (id / _mapping_version) — set by the converter.
+                if (top && isReservedTopLevelField(keyStr)) {
                     continue;
                 }
                 String name = top ? keyStr : prefix + "." + keyStr;
@@ -415,7 +421,7 @@ public final class SolrRecordConverter {
             for (Map.Entry<?, ?> entry : map.entrySet()) {
                 Object key = entry.getKey();
                 String keyStr = key instanceof String ? (String) key : String.valueOf(key);
-                if (ID_FIELD.equals(keyStr)) {
+                if (isReservedTopLevelField(keyStr)) {
                     continue;
                 }
                 addScalar(doc, keyStr, entry.getValue(), null);

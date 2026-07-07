@@ -95,14 +95,15 @@ class SolrOrderingEmbeddedTest {
 
             w.write(tombstone("5", 20));
             w.flush();
-            assertThat(currentName("5")).as("delete must remove the user even with version constraint").isNull();
+            solr.commit(EmbeddedSolrSupport.CORE);
+            // Soft-delete: the doc becomes a versioned tombstone marked _deleted; a query that
+            // filters tombstones (as the app must) returns nothing — the user is "deleted".
+            long live = solr.query(EmbeddedSolrSupport.CORE,
+                    new SolrQuery("id:5").addFilterQuery("-_deleted:true")).getResults().getNumFound();
+            assertThat(live).as("filtered query must not return the soft-deleted user").isEqualTo(0L);
         }
     }
 
-    @org.junit.jupiter.api.Disabled("KNOWN GAP: a stale update arriving after a delete resurrects the "
-            + "user (privacy/GDPR risk). Hard deletes leave no version to reject the older update. Fix "
-            + "requires sending deletes as versioned soft-delete tombstones (id + offset + _deleted=true) "
-            + "instead of deleteById, plus app-side tombstone filtering + cleanup. See solr_wiring.md §8.")
     @Test
     void staleUpdateArrivingAfterADeleteMustNotResurrectTheUser() throws Exception {
         try (SolrWriter w = writer()) {

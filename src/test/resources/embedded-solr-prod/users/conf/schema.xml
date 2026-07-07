@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- Mirror of the PRODUCTION schema (objective_love_web/docker/solr/aggregated_user_data).
+     See that file for the full rationale (stored-only _src, numeric typing, text_ci CI search,
+     value_<N>-typed custom fields, docValues sort keys). -->
+<schema name="aggregated-user-data" version="1.6">
+  <uniqueKey>id</uniqueKey>
+
+  <field name="id" type="string" indexed="true" stored="true" required="true" multiValued="false"/>
+  <field name="_src" type="string" indexed="false" stored="true" docValues="false" multiValued="false"/>
+  <field name="_version_" type="plong" indexed="true" stored="true"/>
+  <field name="_mapping_version" type="string" indexed="true" stored="false" docValues="false" multiValued="false"/>
+  <field name="location" type="location" indexed="true" stored="false" multiValued="false"/>
+
+  <field name="height" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="completion" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="conversation_terminated_longest_seconds" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+
+  <field name="email" type="text_ci" indexed="true" stored="false" multiValued="false"/>
+  <field name="first_name" type="text_ci" indexed="true" stored="false" multiValued="false"/>
+  <field name="last_name" type="text_ci" indexed="true" stored="false" multiValued="false"/>
+  <field name="first_name_sort" type="string" indexed="false" stored="false" docValues="true" multiValued="false"/>
+  <field name="last_name_sort"  type="string" indexed="false" stored="false" docValues="true" multiValued="false"/>
+  <copyField source="first_name" dest="first_name_sort"/>
+  <copyField source="last_name"  dest="last_name_sort"/>
+
+  <field name="_text" type="text_ci" indexed="true" stored="false" multiValued="true"/>
+  <copyField source="email" dest="_text"/>
+  <copyField source="first_name" dest="_text"/>
+  <copyField source="last_name" dest="_text"/>
+  <copyField source="*_value_2" dest="_text"/>
+  <copyField source="*_value_3" dest="_text"/>
+  <copyField source="*_value_4" dest="_text"/>
+  <copyField source="*_value_6" dest="_text"/>
+
+  <dynamicField name="*_sort_value" type="string" indexed="false" stored="false" docValues="true" multiValued="false"/>
+
+  <dynamicField name="*_value_2"  type="text_ci" indexed="true" stored="false" multiValued="true"/>
+  <dynamicField name="*_value_3"  type="text_ci" indexed="true" stored="false" multiValued="true"/>
+  <dynamicField name="*_value_4"  type="string"  indexed="true" stored="false" docValues="true" multiValued="true"/>
+  <dynamicField name="*_value_6"  type="string"  indexed="true" stored="false" docValues="true" multiValued="true"/>
+  <dynamicField name="*_value_8"  type="string"  indexed="true" stored="false" docValues="true" multiValued="true"/>
+  <dynamicField name="*_value_9"  type="string"  indexed="true" stored="false" docValues="true" multiValued="true"/>
+  <dynamicField name="*_value_1"  type="string"  indexed="true" stored="false" multiValued="true"/>
+  <dynamicField name="*_value_5"  type="string"  indexed="true" stored="false" multiValued="true"/>
+  <dynamicField name="*_value_10" type="string"  indexed="true" stored="false" multiValued="true"/>
+
+  <dynamicField name="*_score" type="plong" indexed="true" stored="false" docValues="true" multiValued="true"/>
+  <dynamicField name="*_days_in_stage" type="plong" indexed="true" stored="false" docValues="true" multiValued="true"/>
+  <dynamicField name="promises_summary.counts.*" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+
+  <dynamicField name="*" type="string" indexed="true" stored="false" docValues="true" multiValued="true"/>
+
+  <fieldType name="string" class="solr.StrField" sortMissingLast="true"/>
+  <fieldType name="boolean" class="solr.BoolField" sortMissingLast="true"/>
+  <fieldType name="plong" class="solr.LongPointField"/>
+  <fieldType name="location" class="solr.LatLonPointSpatialField"/>
+  <fieldType name="text_ci" class="solr.TextField" positionIncrementGap="100" multiValued="true">
+    <analyzer>
+      <tokenizer class="solr.KeywordTokenizerFactory"/>
+      <filter class="solr.LowerCaseFilterFactory"/>
+    </analyzer>
+  </fieldType>
+</schema>

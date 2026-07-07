@@ -47,9 +47,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("performance")
 class SolrVsElasticsearchPerfTest {
 
-    private static final int RECORDS = 20_000;
-    private static final int BATCH_SIZE = 500;
-    private static final int IN_FLIGHT = 4;
+    private static final int RECORDS = Integer.getInteger("perf.records", 20_000);
+    private static final int BATCH_SIZE = Integer.getInteger("perf.batch", 500);
+    private static final int IN_FLIGHT = Integer.getInteger("perf.inflight", 4);
 
     private static GenericContainer<?> solrContainer;
     private static ElasticsearchContainer esContainer;
@@ -111,28 +111,30 @@ class SolrVsElasticsearchPerfTest {
         timeSolr(warmup);
         timeElasticsearch(warmup);
 
-        // -- Solr side: drive through SolrSinkTask (real connector code).
-        PhaseResult solr = measure("solr", () -> timeSolr(records));
+        // -- INSERT phase: fresh ids on both engines (real connector code for Solr; REST bulk for ES).
+        PhaseResult solr = measure("solr-insert", () -> timeSolr(records));
+        PhaseResult es = measure("es-insert", () -> timeElasticsearch(records));
 
-        // -- Elasticsearch side: drive through the high-level REST bulk API
-        //    (the Confluent ES connector wraps the same client).
-        PhaseResult es = measure("elasticsearch", () -> timeElasticsearch(records));
+        // -- UPDATE phase: re-write the SAME ids — this is what a Debezium UPDATE stream does
+        //    (full-doc replace = Lucene delete-then-add on both engines).
+        PhaseResult solrUpd = measure("solr-update", () -> timeSolr(records));
+        PhaseResult esUpd = measure("es-update", () -> timeElasticsearch(records));
 
-        double solrRps = RECORDS * 1000.0 / solr.wallMs;
-        double esRps = RECORDS * 1000.0 / es.wallMs;
-        System.out.printf("%n[HEAD-TO-HEAD] records=%d batch=%d inFlight=%d%n",
-                RECORDS, BATCH_SIZE, IN_FLIGHT);
-        System.out.printf("[HEAD-TO-HEAD] Solr:          %5d ms  (%.0f r/s)%n", solr.wallMs, solrRps);
-        System.out.printf("[HEAD-TO-HEAD] Elasticsearch: %5d ms  (%.0f r/s)%n", es.wallMs, esRps);
-        System.out.printf("[HEAD-TO-HEAD] Solr wins by %.1fx%n", es.wallMs / (double) solr.wallMs);
-        System.out.println("[HEAD-TO-HEAD] per-phase metrics (cpu, alloc, gc):");
-        System.out.println(solr.delta.toTable("solr", solr.wallMs));
-        System.out.println(es.delta.toTable("elasticsearch", es.wallMs));
+        System.out.printf("%n[HEAD-TO-HEAD] records=%d batch=%d inFlight=%d%n", RECORDS, BATCH_SIZE, IN_FLIGHT);
+        printRow("INSERT  Solr", solr.wallMs);
+        printRow("INSERT  ES  ", es.wallMs);
+        System.out.printf("[HEAD-TO-HEAD] INSERT  Solr wins by %.2fx%n", es.wallMs / (double) solr.wallMs);
+        printRow("UPDATE  Solr", solrUpd.wallMs);
+        printRow("UPDATE  ES  ", esUpd.wallMs);
+        System.out.printf("[HEAD-TO-HEAD] UPDATE  Solr wins by %.2fx%n", esUpd.wallMs / (double) solrUpd.wallMs);
 
-        // The whole point of using HTTP/2 + concurrent in-flight is to beat
-        // a single connection bulk indexer. Allow a 10% margin so a slow
-        // CI runner with cold JIT can't flake.
-        assertThat(solr.wallMs).isLessThanOrEqualTo((long) (es.wallMs * 0.9));
+        // Both insert and update must beat ES (10% margin for cold-JIT/CI noise).
+        assertThat(solr.wallMs).as("insert").isLessThanOrEqualTo((long) (es.wallMs * 0.9));
+        assertThat(solrUpd.wallMs).as("update").isLessThanOrEqualTo((long) (esUpd.wallMs * 0.9));
+    }
+
+    private static void printRow(String label, long wallMs) {
+        System.out.printf("[HEAD-TO-HEAD] %s: %6d ms  (%.0f r/s)%n", label, wallMs, RECORDS * 1000.0 / wallMs);
     }
 
     /** Wrap a timed phase with JFR + CPU/alloc/GC delta capture. */
