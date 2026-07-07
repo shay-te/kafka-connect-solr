@@ -3,8 +3,6 @@ package com.una.kafka.connect.solr;
 import org.apache.kafka.connect.errors.RetriableException;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.impl.ConcurrentUpdateHttp2SolrClient;
-import org.apache.solr.client.solrj.impl.NoOpResponseParser;
-import org.apache.solr.client.solrj.ResponseParser;
 import org.apache.solr.client.solrj.request.UpdateRequest;
 import org.apache.solr.common.SolrInputDocument;
 import org.apache.solr.common.SolrInputField;
@@ -31,7 +29,6 @@ import java.util.concurrent.atomic.LongAdder;
 public final class SolrBulkProcessor implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(SolrBulkProcessor.class);
-    private static final ResponseParser NO_OP_PARSER = new NoOpResponseParser("javabin");
 
     private final SolrClient client;
     private final ExecutorService executor;
@@ -192,6 +189,11 @@ public final class SolrBulkProcessor implements AutoCloseable {
     }
 
     public void flushAsync() {
+        // Drop finished futures BEFORE adding new ones. In async mode nothing else drains the
+        // inflight queue (only flushSync does), so without this it grows unbounded — a slow
+        // memory leak over a long-running task. Safe for sync mode too: flushSync fully drains
+        // the queue each call, so it's already empty here and this is a no-op.
+        reapCompletedFutures();
         for (Map.Entry<String, UpsertBuffer> e : upsertBuffers.entrySet()) {
             flushOneUpsert(e.getKey(), e.getValue());
         }
@@ -199,6 +201,24 @@ public final class SolrBulkProcessor implements AutoCloseable {
             flushOneDelete(e.getKey(), e.getValue());
         }
         lastFlushNanos = System.nanoTime();
+    }
+
+    /**
+     * Remove already-completed futures from the inflight queue. Their success/failure was
+     * already recorded by the worker (recordsWritten / recordsFailed, and offset acking), so
+     * there's nothing to read off the future — we only need to stop retaining it.
+     */
+    private void reapCompletedFutures() {
+        for (java.util.Iterator<Future<?>> it = inflight.iterator(); it.hasNext(); ) {
+            if (it.next().isDone()) {
+                it.remove();
+            }
+        }
+    }
+
+    /** Test hook: current inflight-future queue depth (must stay bounded in async mode). */
+    int inflightQueueSize() {
+        return inflight.size();
     }
 
     /**
@@ -240,7 +260,17 @@ public final class SolrBulkProcessor implements AutoCloseable {
                 // Early exit on first failure leaves remaining futures in flight.
                 // Their permits release as workers finish; at-least-once is preserved
                 // because Connect re-delivers on the next preCommit retry.
-                throw new RetriableException("Solr bulk request failed", e);
+                Throwable cause = (e instanceof java.util.concurrent.ExecutionException && e.getCause() != null)
+                        ? e.getCause() : e;
+                if (RetryUtil.isRetriable(cause)) {
+                    throw new RetriableException("Solr bulk request failed", cause);
+                }
+                // Permanent rejection (e.g. Solr 400 — bad document / schema-type conflict).
+                // Retrying can NEVER succeed, so do not wrap it as retriable: that would loop the
+                // whole pipeline forever on one poison-pill record. Surface a non-retriable error
+                // so Kafka Connect fails fast / routes it via errors.tolerance + DLQ.
+                throw new org.apache.kafka.connect.errors.ConnectException(
+                        "Solr rejected a document (non-retriable): " + cause.getMessage(), cause);
             }
         }
         // CUHTTP2 queues docs internally; block on its drain so reported offsets are acked.
@@ -294,7 +324,6 @@ public final class SolrBulkProcessor implements AutoCloseable {
             try {
                 return RetryUtil.retry(() -> {
                     UpdateRequest req = new UpdateRequest();
-                    req.setResponseParser(NO_OP_PARSER);
                     req.add(docs);
                     if (commitWithinMs > 0) {
                         req.setCommitWithin(commitWithinMs);
@@ -337,7 +366,6 @@ public final class SolrBulkProcessor implements AutoCloseable {
             try {
                 return RetryUtil.retry(() -> {
                     UpdateRequest req = new UpdateRequest();
-                    req.setResponseParser(NO_OP_PARSER);
                     req.deleteById(ids);
                     if (commitWithinMs > 0) {
                         req.setCommitWithin(commitWithinMs);

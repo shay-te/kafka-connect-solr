@@ -102,7 +102,10 @@ class SolrBulkProcessorTest {
         bulk.upsert("c", doc("1"), null);
         bulk.upsert("c", doc("2"), null);
 
-        assertThatThrownBy(bulk::flushSync).isInstanceOf(RetriableException.class);
+        // A Solr 400 is permanent -> non-retriable (must not loop the pipeline forever).
+        assertThatThrownBy(bulk::flushSync)
+                .isInstanceOf(org.apache.kafka.connect.errors.ConnectException.class)
+                .isNotInstanceOf(RetriableException.class);
         bulk.close();
     }
 

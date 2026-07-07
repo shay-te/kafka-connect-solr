@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<schema name="embedded-test" version="1.6">
+  <uniqueKey>id</uniqueKey>
+
+  <field name="id" type="string" indexed="true" stored="true" required="true" multiValued="false"/>
+  <field name="_version_" type="plong" indexed="true" stored="true"/>
+  <field name="_mapping_version" type="string" indexed="true" stored="true" multiValued="false"/>
+  <!-- Everything the converter emits lands here as a stored, indexed value. -->
+  <dynamicField name="*" type="string" indexed="true" stored="true" multiValued="true"/>
+
+  <fieldType name="string" class="solr.StrField" sortMissingLast="true" docValues="true"/>
+  <fieldType name="plong" class="solr.LongPointField" docValues="true"/>
+</schema>

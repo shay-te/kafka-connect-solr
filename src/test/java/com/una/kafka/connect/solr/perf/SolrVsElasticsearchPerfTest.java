@@ -6,20 +6,20 @@ import org.apache.http.HttpHost;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.sink.SinkRecord;
-import org.elasticsearch.action.bulk.BulkRequest;
-import org.elasticsearch.action.bulk.BulkResponse;
-import org.elasticsearch.action.index.IndexRequest;
-import org.elasticsearch.client.RequestOptions;
+import org.apache.http.util.EntityUtils;
+import org.elasticsearch.client.Request;
+import org.elasticsearch.client.Response;
 import org.elasticsearch.client.RestClient;
-import org.elasticsearch.client.RestHighLevelClient;
-import org.elasticsearch.xcontent.XContentType;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.elasticsearch.ElasticsearchContainer;
 import org.testcontainers.utility.DockerImageName;
+
+import java.time.Duration;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -47,9 +47,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("performance")
 class SolrVsElasticsearchPerfTest {
 
-    private static final int RECORDS = 30_000;
-    private static final int BATCH_SIZE = 1_000;
-    private static final int IN_FLIGHT = 8;
+    private static final int RECORDS = 20_000;
+    private static final int BATCH_SIZE = 500;
+    private static final int IN_FLIGHT = 4;
 
     private static GenericContainer<?> solrContainer;
     private static ElasticsearchContainer esContainer;
@@ -62,7 +62,15 @@ class SolrVsElasticsearchPerfTest {
     static void startContainers() {
         solrContainer = new GenericContainer<>(DockerImageName.parse("solr:9.4"))
                 .withExposedPorts(8983)
-                .withCommand("solr-precreate", "perf");
+                // Match Elasticsearch's 1 GB heap so the comparison is fair AND Solr doesn't OOM
+                // under the benchmark load (the default 512 MB dies on 100k docs at high concurrency).
+                .withEnv("SOLR_JAVA_MEM", "-Xms1g -Xmx1g")
+                .withCommand("solr-precreate", "perf")
+                // Port-open != core-ready. Wait until the 'perf' core actually answers a query,
+                // otherwise the warmup fires into a half-started Solr and the run dies.
+                .waitingFor(Wait.forHttp("/solr/perf/select?q=*:*")
+                        .forPort(8983).forStatusCode(200)
+                        .withStartupTimeout(Duration.ofMinutes(2)));
         solrContainer.start();
         solrBaseUrl = "http://" + solrContainer.getHost() + ":" + solrContainer.getMappedPort(8983) + "/solr";
 
@@ -155,6 +163,12 @@ class SolrVsElasticsearchPerfTest {
         Map<String, String> props = new HashMap<>();
         props.put(SolrSinkConfig.SOLR_URL_CONFIG, solrBaseUrl);
         props.put(SolrSinkConfig.SOLR_COLLECTION_CONFIG, "perf");
+        // The precreated 'perf' core is standalone + schemaless (_default configset auto-adds
+        // fields). Don't probe/create collections (no Collections API in standalone) and don't
+        // fight the schemaless processor with concurrent Schema-API evolves — that contention
+        // under 8 in-flight threads is what returned error responses and destabilised Solr.
+        props.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "UNUSED");
+        props.put(SolrSinkConfig.SCHEMA_IGNORE_CONFIG, "true");
         props.put(SolrSinkConfig.BATCH_SIZE_CONFIG, String.valueOf(BATCH_SIZE));
         props.put(SolrSinkConfig.LINGER_MS_CONFIG, "10");
         props.put(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG, String.valueOf(IN_FLIGHT));
@@ -178,60 +192,62 @@ class SolrVsElasticsearchPerfTest {
     }
 
     private long timeElasticsearch(List<SinkRecord> records) throws Exception {
-        @SuppressWarnings("deprecation")
-        RestHighLevelClient client = new RestHighLevelClient(
-                RestClient.builder(new HttpHost(esHost, esPort, "http")));
+        // Low-level REST client: pure HTTP/JSON, no Lucene. (The high-level client pulls in
+        // Lucene 8.x, which is incompatible with Solr 9.4's Lucene 9.8 on one classpath.)
+        RestClient client = RestClient.builder(new HttpHost(esHost, esPort, "http")).build();
         try {
-            // Pre-create index so first request isn't slowed by mapping inference.
-            client.indices().create(
-                    new org.elasticsearch.client.indices.CreateIndexRequest("perf"),
-                    RequestOptions.DEFAULT);
-        } catch (Exception ignored) {
-            // Already exists - fine.
-        }
+            // Pre-create the index so the first bulk isn't slowed by mapping inference.
+            try {
+                client.performRequest(new Request("PUT", "/perf"));
+            } catch (Exception ignored) {
+                // Already exists — fine.
+            }
 
-        ExecutorService exec = Executors.newFixedThreadPool(IN_FLIGHT);
-        AtomicInteger failures = new AtomicInteger();
-        long t0 = System.nanoTime();
-        List<java.util.concurrent.Future<?>> futures = new ArrayList<>();
-        for (int i = 0; i < records.size(); i += BATCH_SIZE) {
-            final int from = i;
-            final int to = Math.min(records.size(), i + BATCH_SIZE);
-            futures.add(exec.submit(() -> {
-                BulkRequest bulk = new BulkRequest();
-                for (int j = from; j < to; j++) {
-                    SinkRecord r = records.get(j);
-                    IndexRequest req = new IndexRequest("perf")
-                            .id((String) r.key())
-                            .source(structToJson((Struct) r.value()), XContentType.JSON);
-                    bulk.add(req);
-                }
-                try {
-                    BulkResponse resp = client.bulk(bulk, RequestOptions.DEFAULT);
-                    if (resp.hasFailures()) {
+            ExecutorService exec = Executors.newFixedThreadPool(IN_FLIGHT);
+            AtomicInteger failures = new AtomicInteger();
+            long t0 = System.nanoTime();
+            List<java.util.concurrent.Future<?>> futures = new ArrayList<>();
+            for (int i = 0; i < records.size(); i += BATCH_SIZE) {
+                final int from = i;
+                final int to = Math.min(records.size(), i + BATCH_SIZE);
+                futures.add(exec.submit(() -> {
+                    StringBuilder body = new StringBuilder(BATCH_SIZE * 128);
+                    for (int j = from; j < to; j++) {
+                        SinkRecord r = records.get(j);
+                        body.append("{\"index\":{\"_id\":\"").append(r.key()).append("\"}}\n")
+                                .append(structToJson((Struct) r.value())).append('\n');
+                    }
+                    try {
+                        Request req = new Request("POST", "/perf/_bulk");
+                        req.setJsonEntity(body.toString());
+                        Response resp = client.performRequest(req);
+                        // _bulk returns 200 even on per-doc failures — check the body.
+                        if (resp.getStatusLine().getStatusCode() >= 300
+                                || EntityUtils.toString(resp.getEntity()).contains("\"errors\":true")) {
+                            failures.incrementAndGet();
+                        }
+                    } catch (Exception e) {
                         failures.incrementAndGet();
                     }
-                } catch (Exception e) {
-                    failures.incrementAndGet();
-                }
-            }));
+                }));
+            }
+            for (java.util.concurrent.Future<?> f : futures) {
+                f.get();
+            }
+            // Refresh so "finished" is a fair, queryable state.
+            client.performRequest(new Request("POST", "/perf/_refresh"));
+            long ns = System.nanoTime() - t0;
+            exec.shutdown();
+            assertThat(failures.get()).isZero();
+            return TimeUnit.NANOSECONDS.toMillis(ns);
+        } finally {
+            client.close();
         }
-        for (java.util.concurrent.Future<?> f : futures) {
-            f.get();
-        }
-        // Refresh so we have a fair view of "finished".
-        client.indices().refresh(new org.elasticsearch.action.admin.indices.refresh.RefreshRequest("perf"),
-                RequestOptions.DEFAULT);
-        long ns = System.nanoTime() - t0;
-        exec.shutdown();
-        client.close();
-        assertThat(failures.get()).isZero();
-        return TimeUnit.NANOSECONDS.toMillis(ns);
     }
 
     private static Struct sample(Schema schema, int i) {
         return new Struct(schema)
-                .put("id", (long) i)
+                .put("user_id", (long) i)
                 .put("first_name", "Ada" + (i % 100))
                 .put("last_name", "Lovelace" + (i % 100))
                 .put("email", "user" + i + "@example.com")

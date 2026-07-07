@@ -38,6 +38,7 @@ public final class SolrWriter implements AutoCloseable {
     private final boolean keyIgnoreGlobal;
     private final boolean externalVersioningEnabled;
     private final String externalVersionHeader;
+    private final String kafkaOffsetVersionField;
     private final BehaviorOnNullValues behaviorOnNullValues;
     private final BehaviorOnMalformed behaviorOnMalformed;
     // Cached so we can skip the per-record schemaManager.evolveIfNeeded(...) call entirely
@@ -70,6 +71,7 @@ public final class SolrWriter implements AutoCloseable {
         this.keyIgnoreGlobal = config.keyIgnore();
         this.externalVersioningEnabled = config.externalVersioningEnabled();
         this.externalVersionHeader = config.externalVersionHeader();
+        this.kafkaOffsetVersionField = config.kafkaOffsetVersionField();
         this.behaviorOnNullValues = config.behaviorOnNullValues();
         this.behaviorOnMalformed = config.behaviorOnMalformed();
         this.schemaEvolveEnabled = config.schemaAutoEvolve();
@@ -137,6 +139,12 @@ public final class SolrWriter implements AutoCloseable {
                     || (!topicsIgnoreKeyEmpty && topicsIgnoreKey.contains(topic));
             SolrInputDocument doc = converter.convert(record, keyIgnored);
             applyExternalVersion(doc, record);
+            if (!kafkaOffsetVersionField.isEmpty()) {
+                // Stamp the Kafka offset as a monotonic (per-key) version. With a Solr
+                // DocBasedVersionConstraints processor on this field, an out-of-order older-offset
+                // write is ignored, so concurrent in-flight batches can't overwrite a newer doc.
+                doc.setField(kafkaOffsetVersionField, record.kafkaOffset());
+            }
             OffsetState state = offsetTracker.track(record);
             // Converter accumulates the byte estimate during field building when bulk.size.bytes>0,
             // letting SolrBulkProcessor skip the second-pass walk of the doc.

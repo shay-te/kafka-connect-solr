@@ -15,7 +15,6 @@ import org.apache.solr.common.SolrInputDocument;
 
 import java.nio.ByteBuffer;
 import java.util.Base64;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
@@ -78,9 +77,9 @@ public final class SolrRecordConverter {
         this.writeMethod = config.writeMethod();
         this.keyIgnoreGlobal = config.keyIgnore();
         this.compactMapEntries = config.compactMapEntries();
-        this.idField = config.idField();
-        this.idFieldPath = this.idField == null ? new String[0] : this.idField.split("\\.");
-        this.mappingVersion = config.mappingVersion() == null ? "" : config.mappingVersion();
+        this.idField = config.idField();          // ConfigDef default "id" — never null
+        this.idFieldPath = this.idField.split("\\.");
+        this.mappingVersion = config.mappingVersion(); // ConfigDef default "" — never null
         this.idCoerceToString = config.idCoerceToString();
         this.bulkSizeTracking = config.bulkSizeBytes() > 0;
     }
@@ -263,13 +262,20 @@ public final class SolrRecordConverter {
         if (fields.isEmpty()) {
             return EMPTY_PLAN;
         }
-        FieldEncoder[] plan = new FieldEncoder[fields.size()];
+        boolean top = prefix.isEmpty();
+        List<FieldEncoder> plan = new java.util.ArrayList<>(fields.size());
         for (int i = 0, n = fields.size(); i < n; i++) {
             Field field = fields.get(i);
-            String name = prefix.isEmpty() ? field.name() : prefix + "." + field.name();
-            plan[i] = encoderFor(field, name);
+            // Skip the value's own top-level id field: Solr's uniqueKey 'id' is set from
+            // deriveId (Kafka key / record field), so re-emitting it here would produce two
+            // 'id' values and Solr rejects the whole doc ("multiple values for uniqueKey").
+            if (top && ID_FIELD.equals(field.name())) {
+                continue;
+            }
+            String name = top ? field.name() : prefix + "." + field.name();
+            plan.add(encoderFor(field, name));
         }
-        return plan;
+        return plan.toArray(EMPTY_PLAN);
     }
 
     private FieldEncoder encoderFor(Field field, String name) {
@@ -313,14 +319,11 @@ public final class SolrRecordConverter {
                 ScalarEncoder elementEncoder = scalarEncoderFor(elementSchema);
                 return (conv, doc, src) -> {
                     Object v = src.get(field);
+                    // Connect ARRAY values are always List (Struct.validate enforces it).
                     if (v instanceof List) {
                         List<?> list = (List<?>) v;
                         for (int i = 0, n = list.size(); i < n; i++) {
                             Object item = list.get(i);
-                            if (item != null) elementEncoder.write(conv, doc, name, item);
-                        }
-                    } else if (v instanceof Collection) {
-                        for (Object item : (Collection<?>) v) {
                             if (item != null) elementEncoder.write(conv, doc, name, item);
                         }
                     }
@@ -366,6 +369,17 @@ public final class SolrRecordConverter {
                     break;
             }
         }
+        if (value instanceof java.util.Collection) {
+            // Schemaless array: flatten per element. Arrays of objects (e.g. promises,
+            // custom_fields from the kstreams doc) become multi-valued dotted fields
+            // (name.subfield); Solr can't index a raw Map value — it would misread it as an
+            // atomic-update op. Scalars just become a multi-valued field. Mirrors the schema'd
+            // struct-array path.
+            for (Object item : (java.util.Collection<?>) value) {
+                if (item != null) addScalar(doc, name, item, null);
+            }
+            return;
+        }
         if (value instanceof Struct) {
             Struct s = (Struct) value;
             populateFromStruct(doc, s, s.schema(), name);
@@ -383,20 +397,28 @@ public final class SolrRecordConverter {
     }
 
     void populateFromMap(SolrInputDocument doc, Map<?, ?> map, String prefix) {
+        boolean top = prefix.isEmpty();
         if (compactMapEntries) {
             for (Map.Entry<?, ?> entry : map.entrySet()) {
                 Object key = entry.getKey();
                 String keyStr = key instanceof String ? (String) key : String.valueOf(key);
-                String name = prefix.isEmpty() ? keyStr : prefix + "." + keyStr;
+                // Skip the value's own top-level id — Solr's uniqueKey is set from deriveId.
+                if (top && ID_FIELD.equals(keyStr)) {
+                    continue;
+                }
+                String name = top ? keyStr : prefix + "." + keyStr;
                 addScalar(doc, name, entry.getValue(), null);
             }
             return;
         }
-        if (prefix.isEmpty()) {
+        if (top) {
             for (Map.Entry<?, ?> entry : map.entrySet()) {
                 Object key = entry.getKey();
-                addScalar(doc, key instanceof String ? (String) key : String.valueOf(key),
-                        entry.getValue(), null);
+                String keyStr = key instanceof String ? (String) key : String.valueOf(key);
+                if (ID_FIELD.equals(keyStr)) {
+                    continue;
+                }
+                addScalar(doc, keyStr, entry.getValue(), null);
             }
             return;
         }
@@ -445,8 +467,9 @@ public final class SolrRecordConverter {
         return cur;
     }
 
+    // The caller only ever passes an ARRAY's element schema, which is never null.
     private static ScalarEncoder scalarEncoderFor(Schema schema) {
-        if (schema != null && schema.name() != null) {
+        if (schema.name() != null) {
             switch (schema.name()) {
                 case Timestamp.LOGICAL_NAME:
                 case Date.LOGICAL_NAME:
@@ -457,9 +480,6 @@ public final class SolrRecordConverter {
                 default:
                     break;
             }
-        }
-        if (schema == null) {
-            return SolrRecordConverter::addScalarUntyped;
         }
         switch (schema.type()) {
             case STRUCT:
@@ -473,23 +493,6 @@ public final class SolrRecordConverter {
                 };
             default:
                 return (conv, doc, name, value) -> conv.addField(doc, name, value);
-        }
-    }
-
-    private static void addScalarUntyped(SolrRecordConverter conv, SolrInputDocument doc, String name, Object value) {
-        if (value instanceof Struct) {
-            Struct s = (Struct) value;
-            conv.populateFromStruct(doc, s, s.schema(), name);
-        } else if (value instanceof Map) {
-            conv.populateFromMap(doc, (Map<?, ?>) value, name);
-        } else if (value instanceof byte[]) {
-            conv.addField(doc, name, BASE64.encodeToString((byte[]) value));
-        } else if (value instanceof ByteBuffer) {
-            conv.addField(doc, name, BASE64.encodeToString(((ByteBuffer) value).array()));
-        } else if (value instanceof java.util.Date) {
-            conv.addField(doc, name, ((java.util.Date) value).toInstant().toString());
-        } else {
-            conv.addField(doc, name, value);
         }
     }
 

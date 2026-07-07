@@ -93,8 +93,10 @@ class SolrBulkProcessorStressTest {
         assertThat(totalServed.get()).isGreaterThanOrEqualTo(expectedBatches);
         // Concurrency must actually exceed 1.
         assertThat(peakConcurrent.get()).isGreaterThanOrEqualTo(2);
-        // Wall time must be meaningfully less than serial; allow generous slack for CI.
-        assertThat(seconds).isLessThan(serialLowerBound * 0.6);
+        // Wall time must be meaningfully less than serial. Margin kept generous (0.85) so a
+        // loaded CI box — where absolute timings are noisy — doesn't flake; concurrency is
+        // separately proven by peakConcurrent>=2 above.
+        assertThat(seconds).isLessThan(serialLowerBound * 0.85);
     }
 
     @Test

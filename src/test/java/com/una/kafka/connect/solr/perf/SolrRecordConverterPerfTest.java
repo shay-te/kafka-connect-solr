@@ -56,7 +56,7 @@ class SolrRecordConverterPerfTest {
 
     static Schema userLikeSchema() {
         return SchemaBuilder.struct()
-                .field("id", Schema.INT64_SCHEMA)
+                .field("user_id", Schema.INT64_SCHEMA)
                 .field("first_name", Schema.STRING_SCHEMA)
                 .field("last_name", Schema.STRING_SCHEMA)
                 .field("email", Schema.STRING_SCHEMA)
@@ -76,7 +76,7 @@ class SolrRecordConverterPerfTest {
 
     static Struct sampleStruct(Schema schema) {
         return new Struct(schema)
-                .put("id", 12345L)
+                .put("user_id", 12345L)
                 .put("first_name", "Ada")
                 .put("last_name", "Lovelace")
                 .put("email", "ada@example.com")
