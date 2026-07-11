@@ -5,6 +5,9 @@
   <field name="id" type="string" indexed="true" stored="true" required="true" multiValued="false"/>
   <field name="_version_" type="plong" indexed="true" stored="true"/>
   <field name="_mapping_version" type="string" indexed="true" stored="true" multiValued="false"/>
+  <!-- Typed field for poison-doc tests: a doc whose height_cm is not a number converts fine
+       in the connector but is REJECTED by Solr at flush time (schema type conflict, 400). -->
+  <field name="height_cm" type="plong" indexed="true" stored="true" multiValued="false"/>
   <!-- Everything the converter emits lands here as a stored, indexed value. -->
   <dynamicField name="*" type="string" indexed="true" stored="true" multiValued="true"/>
 

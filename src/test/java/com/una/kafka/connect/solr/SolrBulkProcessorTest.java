@@ -110,6 +110,29 @@ class SolrBulkProcessorTest {
     }
 
     @Test
+    void warnModeDoesNotSwallowRetriableFailures() throws Exception {
+        // behavior.on.malformed.documents governs only NON-retriable rejections. A 503 that
+        // exhausts retries must stay a RetriableException (Connect redelivers) — WARN must not
+        // turn a Solr outage into doc-by-doc data loss.
+        SolrClient client = mock(SolrClient.class);
+        when(client.request(any(UpdateRequest.class), anyString()))
+                .thenThrow(new BaseHttpSolrClient.RemoteSolrException("u", 503, "down", null));
+
+        Map<String, String> overrides = new HashMap<>();
+        overrides.put(SolrSinkConfig.BEHAVIOR_ON_MALFORMED_DOCS_CONFIG, "warn");
+        overrides.put(SolrSinkConfig.MAX_RETRIES_CONFIG, "1");
+        overrides.put(SolrSinkConfig.RETRY_BACKOFF_MS_CONFIG, "1");
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(overrides));
+        OffsetState s = new OffsetState(new org.apache.kafka.common.TopicPartition("t", 0), 1L);
+        bulk.upsert("c", doc("1"), s);
+        bulk.upsert("c", doc("2"), null);
+
+        assertThatThrownBy(bulk::flushSync).isInstanceOf(RetriableException.class);
+        assertThat(s.isAcked()).as("retriable failures must never be acked away").isFalse();
+        bulk.close();
+    }
+
+    @Test
     void closeFlushesAndShutsDown() throws Exception {
         SolrClient client = mock(SolrClient.class);
         SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()));

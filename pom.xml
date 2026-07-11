@@ -195,8 +195,12 @@
                     <excludedGroups>performance</excludedGroups>
                     <!-- jdk.attach.allowAttachSelf=true lets Mockito's Byte Buddy self-attach on
                          macOS JDK installations where the default is false (without this, every
-                         mock(...) call dies with "Could not self-attach to current VM"). -->
-                    <argLine>@{surefireArgLine} -Djdk.attach.allowAttachSelf=true</argLine>
+                         mock(...) call dies with "Could not self-attach to current VM").
+                         net.bytebuddy.experimental=true lets Byte Buddy instrument on JDKs newer
+                         than it officially supports (the build targets Java 11, but a dev's `mvn`
+                         may run on a much newer JDK — e.g. Homebrew defaulting to 24 — where mocks
+                         would otherwise die with "class file major version NN is not supported"). -->
+                    <argLine>@{surefireArgLine} -Djdk.attach.allowAttachSelf=true -Dnet.bytebuddy.experimental=true</argLine>
                 </configuration>
             </plugin>
             <plugin>
@@ -204,7 +208,7 @@
                 <artifactId>maven-failsafe-plugin</artifactId>
                 <version>3.1.2</version>
                 <configuration>
-                    <argLine>@{failsafeArgLine} -Djdk.attach.allowAttachSelf=true</argLine>
+                    <argLine>@{failsafeArgLine} -Djdk.attach.allowAttachSelf=true -Dnet.bytebuddy.experimental=true</argLine>
                 </configuration>
                 <executions>
                     <execution>
@@ -218,7 +222,8 @@
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
-                <version>0.8.11</version>
+                <!-- 0.8.13 adds Java 24 class-file support; 0.8.11 fails to instrument on newer JDKs. -->
+                <version>0.8.13</version>
                 <executions>
                     <execution>
                         <id>prepare-agent</id>
@@ -324,7 +329,7 @@
                             <groups>performance</groups>
                             <!-- argLine intentionally overrides parent (drops the JaCoCo agent);
                                  perf runs measure throughput, not coverage. -->
-                            <argLine>-Xms512m -Xmx2g</argLine>
+                            <argLine>-Xms512m -Xmx2g -Djdk.attach.allowAttachSelf=true -Dnet.bytebuddy.experimental=true</argLine>
                             <forkCount>1</forkCount>
                             <reuseForks>false</reuseForks>
                         </configuration>

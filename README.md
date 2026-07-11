@@ -109,9 +109,16 @@ You have three ways to make `max.in.flight.requests > 1` correct:
    change, set `write.method=ATOMIC_UPDATE`. Solr merges field-by-field
    so reordering is benign at the field level.
 
-3. **Drop to `max.in.flight.requests=1`.** Slower but bulletproof — every
-   batch is acked before the next is sent. Matches the
-   kafka-connect-elasticsearch default.
+3. **Drop to `max.in.flight.requests=1`.** Slower — every batch is acked
+   before the next is sent, so *cross-batch* reordering disappears.
+   Matches the kafka-connect-elasticsearch default.
+
+Independently of the setting, upserts and deletes buffered in the same
+flush interval are always applied in Kafka-offset order: each collection
+keeps a single ordered op buffer that is flushed as consecutive same-type
+runs (`add,add,del,add` → add-batch, delete-batch, add-batch) sent
+sequentially. A `delete` followed by a re-`create` of the same key can
+therefore never be applied as create-then-delete.
 
 For a typical Debezium CDC pipeline where each row updates at human
 speed (seconds apart), races for the same key are rare in practice

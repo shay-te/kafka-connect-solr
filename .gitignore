@@ -1,0 +1,11 @@
+# Maven build output (compiled classes, jars, and the JaCoCo coverage exec files
+# jacoco-ut.exec / jacoco-it.exec / jacoco.exec — all regenerated on every build).
+target/
+
+# IDE / editor
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store

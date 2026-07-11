@@ -85,6 +85,33 @@ class ValidatorTest {
     }
 
     @Test
+    void inFlightOneWithoutVersionFieldAccepted() {
+        Map<String, String> p = valid();
+        p.put(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG, "1");
+        Config result = new SolrSinkConnector().validate(p);
+        assertThat(hasErrorFor(result, SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG)).isFalse();
+    }
+
+    @Test
+    void inFlightAboveOneWithVersionFieldAccepted() {
+        Map<String, String> p = valid();
+        p.put(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG, "8");
+        p.put(SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG, "_offset_ver");
+        Config result = new SolrSinkConnector().validate(p);
+        assertThat(hasErrorFor(result, SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG)).isFalse();
+    }
+
+    @Test
+    void inFlightAboveOneWithoutVersionFieldRejected() {
+        // Concurrent in-flight batches without the offset-version constraint silently lose
+        // ordering (an older update can overwrite a newer one) — must fail fast at validate.
+        Map<String, String> p = valid();
+        p.put(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG, "8");
+        Config result = new SolrSinkConnector().validate(p);
+        assertThat(hasErrorFor(result, SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG)).isTrue();
+    }
+
+    @Test
     void regexCollectionRequiresArrow() {
         Map<String, String> p = valid();
         p.put(SolrSinkConfig.COLLECTION_NAMING_STRATEGY_CONFIG, "TOPIC_REGEX");

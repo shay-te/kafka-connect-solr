@@ -24,6 +24,7 @@ public final class Validator {
         requireSslFiles(byName, props);
         requireKerberos(byName, props);
         sanityCheckThroughput(byName, props);
+        requireOrderingSafety(byName, props);
         sanityCheckRegexCollection(byName, props);
 
         return base;
@@ -107,6 +108,22 @@ public final class Validator {
         Integer maxRetries = asInt(p.get(SolrSinkConfig.MAX_RETRIES_CONFIG));
         if (maxRetries != null && maxRetries < 0) {
             err(v, SolrSinkConfig.MAX_RETRIES_CONFIG, "max.retries must be >= 0.");
+        }
+    }
+
+    private static void requireOrderingSafety(Map<String, ConfigValue> v, Map<String, String> p) {
+        Integer inFlight = asInt(p.get(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG));
+        if (inFlight == null || inFlight <= 1) {
+            return;
+        }
+        if (nullOrEmpty(p.get(SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG))) {
+            err(v, SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG,
+                    "max.in.flight.requests > 1 without '" + SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG
+                            + "' silently loses ordering: concurrent batches can land out of order, so an "
+                            + "older update can overwrite a newer one. Set '"
+                            + SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG
+                            + "' (with a DocBasedVersionConstraints processor on that field) "
+                            + "or use max.in.flight.requests=1.");
         }
     }
 

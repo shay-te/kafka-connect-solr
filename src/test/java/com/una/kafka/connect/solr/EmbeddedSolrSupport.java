@@ -26,12 +26,22 @@ final class EmbeddedSolrSupport {
         return start("embedded-solr");
     }
 
-    /** Same, from a named test configset directory on the classpath (e.g. embedded-solr-versioned). */
-    static EmbeddedSolrServer start(String configsetName) throws Exception {
+    /**
+     * Same, from a named test configset directory on the classpath (e.g. embedded-solr-versioned).
+     * Any {@code extraCores} are cloned from the {@link #CORE} configset so multi-collection
+     * behaviour can be exercised against real cores.
+     */
+    static EmbeddedSolrServer start(String configsetName, String... extraCores) throws Exception {
         Path resourceHome = Paths.get(
                 EmbeddedSolrSupport.class.getResource("/" + configsetName + "/solr.xml").toURI()).getParent();
         Path solrHome = Files.createTempDirectory("embedded-solr-home");
         copyTree(resourceHome, solrHome);
+        for (String extra : extraCores) {
+            Path clone = solrHome.resolve(extra);
+            copyTree(solrHome.resolve(CORE), clone);
+            Files.write(clone.resolve("core.properties"),
+                    ("name=" + extra + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        }
         CoreContainer container = CoreContainer.createAndLoad(solrHome);
         return new EmbeddedSolrServer(container, CORE);
     }

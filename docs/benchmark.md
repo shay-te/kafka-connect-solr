@@ -41,11 +41,50 @@ Prereqs: Docker (for Testcontainers) and JDK 11+.
 mvn -B -Pperf test -Dtest=SolrVsElasticsearchPerfTest
 ```
 
-This starts Solr 9.4 and Elasticsearch 7.17 containers, drives the same record set
-through both, prints the head-to-head table, and drops:
+This starts Solr 9.4 and Elasticsearch 7.17 containers and drives the same record set
+through **all five operations** head-to-head — **SEED** (bulk insert via the real
+`SolrSinkTask` vs ES `_bulk`), **UPDATE** (re-write same ids), **FIND** (bool filter),
+**SORT** (numeric desc, top-50), **DELETE** (delete-by-query all) — printing a
+`[HEAD-TO-HEAD]` row per op with the winner and margin, and dropping per-phase
+`.jfr` files under `target/perf-jfr/`.
 
-- `target/perf-jfr/solr.jfr`
-- `target/perf-jfr/elasticsearch.jfr`
+Tunables (`-D`): `perf.records` (default 20000), `perf.queries` (200 read iters),
+`perf.repeats` (best-of-N per phase, default 3).
+
+Methodology notes:
+- **Best-of-N.** Each phase runs `perf.repeats` times and keeps the *fastest* wall-clock.
+  A single-shot micro-benchmark under fresh containers is dominated by GC/JIT/scheduler
+  jitter (observed ~2x run-to-run swings, winner flipping); best-of-N cancels transient
+  interference for *both* engines so the numbers reflect real engine speed. (DELETE runs
+  once — a second delete-by-query on an empty index is a no-op.)
+- **Fair SORT.** The throwaway `perf` core is schemaless `_default`, which would auto-map
+  the numeric sort field as multiValued/no-docValues (Solr can't sort that efficiently — a
+  test-core artifact, not a Solr trait). The test defines it single-valued + docValues, as
+  the production `aggregated_user_data` configset does, so SORT is apples-to-apples.
+- **Gates.** SEED + DELETE are structural Solr wins (batched connector; O(1) delete) →
+  gated tightly (≤10% slower). UPDATE/FIND/SORT are near-ties between two mature Lucene
+  engines → gated at "competitive" (≤30% slower) to catch real regressions without
+  flaking. The printed head-to-head is the source of truth for actual margins.
+
+Representative local result (20k records, best-of-3): Solr won every op — SEED/UPDATE
+~1.7–2.8x, FIND ~1.8x, SORT ~1.2–1.4x, DELETE ~15–21x.
+
+### In-flight scaling (`writeThroughputScalesWithInFlightRequests`)
+
+A second `@Test` in the same class quantifies the migration's biggest write-throughput
+lever: production runs the sink at `max.in.flight.requests=1` for delete/upsert ordering,
+but with `kafka.offset.version.field` + a `DocBasedVersionConstraints` processor (ordering
+proven by `SolrOrderingEmbeddedTest`) it can safely run higher. Seeding 20k docs (each
+stamped `_offset_ver`) at in-flight 1 / 4 / 8:
+
+```
+inFlight=1: ~20k rec/s   1.00x
+inFlight=4: ~44k rec/s   ~2.1x
+inFlight=8: ~48k rec/s   ~2.3x
+```
+
+Wired to env in `debezium_setup.py`: `SOLR_MAX_IN_FLIGHT` (default 1) + `SOLR_OFFSET_VERSION_FIELD`
+(default off). See `solr_wiring.md §8.1` to enable safely.
 
 If JFR is not available in your JDK build, the test still runs — JFR captures are
 best-effort, the assertion still works off wall-clock.
