@@ -142,9 +142,13 @@ class SolrVsElasticsearchPerfTest {
         // -- FIND phase: the same bool filter issued QUERIES times against each populated index.
         //    (status:2 AND language:en — a real Users-grid style filter; the two terms co-occur
         //     in the sample data). Assert both return hits before timing.
+        //    Solr shape: q=*:* with the terms as fq — the filter-context analog of the ES body
+        //    (unscored, filterCache bitsets) and the EXACT shape the production read layer emits
+        //    (solr_query_builder.search_docs: q=MATCH_ALL + fq list). A scored q= here would
+        //    measure ranking work the ES bool.filter body never does.
         assertThat(solrFind("status:2 AND language:en")).as("solr find hits").isGreaterThan(0);
         assertThat(esFind(ES_FIND_BODY)).as("es find hits").isGreaterThan(0);
-        PhaseResult solrFindR = measure("solr-find", () -> timeSolrQuery("q=status:2 AND language:en&rows=20", QUERIES));
+        PhaseResult solrFindR = measure("solr-find", () -> timeSolrQuery("q=*:*&fq=status:2&fq=language:en&rows=20", QUERIES));
         PhaseResult esFindR = measure("es-find", () -> timeEsSearch(ES_FIND_BODY, QUERIES));
 
         // -- SORT phase: match-all, sorted by a numeric field, top 50 — QUERIES times.

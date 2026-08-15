@@ -1,8 +1,12 @@
 package com.una.kafka.connect.solr.perf;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.http.HttpHost;
 import org.apache.solr.client.solrj.SolrQuery;
 import org.apache.solr.client.solrj.impl.Http2SolrClient;
+import org.apache.solr.client.solrj.response.QueryResponse;
+import org.apache.solr.common.SolrDocument;
 import org.apache.solr.common.SolrInputDocument;
 import org.elasticsearch.client.Request;
 import org.elasticsearch.client.RestClient;
@@ -99,7 +103,10 @@ class SolrVsElasticsearchQueryPerfTest {
                 + "\"height\":{\"type\":\"integer\"},"
                 + "\"custom_fields\":{\"type\":\"nested\",\"properties\":{"
                 + "\"custom_field_id\":{\"type\":\"integer\"},"
-                + "\"value_4\":{\"type\":\"keyword\"},\"sort_value\":{\"type\":\"keyword\"}}}}}}");
+                + "\"value_4\":{\"type\":\"keyword\"},\"sort_value\":{\"type\":\"keyword\"}}},"
+                + "\"promises\":{\"type\":\"nested\",\"properties\":{"
+                + "\"id\":{\"type\":\"integer\"},\"status\":{\"type\":\"integer\"},"
+                + "\"created_at\":{\"type\":\"date\"}}}}}}");
         esClient.performRequest(createIndex);
 
         List<SolrInputDocument> solrBatch = new ArrayList<>(DOCS);
@@ -110,6 +117,24 @@ class SolrVsElasticsearchQueryPerfTest {
             String tier = TIERS[i % TIERS.length];
             String createdAt = String.format(Locale.ROOT, "2026-%02d-%02dT00:00:00Z", 1 + (i % 12), 1 + (i % 27));
 
+            // Three promises per user (statuses cycle 1..6); the streamer's derived
+            // promises_latest_actionable_at = max created_at over actionable (1/2/4) ones.
+            StringBuilder promisesJson = new StringBuilder(160);
+            String latestActionable = null;
+            for (int k = 0; k < 3; k++) {
+                int pStatus = (i + k) % 6 + 1;
+                String pCreated = String.format(Locale.ROOT, "2026-%02d-%02dT%02d:00:00Z",
+                        1 + (i % 12), 1 + (i % 27), (i + k) % 24);
+                if (k > 0) promisesJson.append(',');
+                promisesJson.append("{\"id\":").append(i * 3 + k)
+                        .append(",\"status\":").append(pStatus)
+                        .append(",\"created_at\":\"").append(pCreated).append("\"}");
+                boolean actionable = pStatus == 1 || pStatus == 2 || pStatus == 4;
+                if (actionable && (latestActionable == null || pCreated.compareTo(latestActionable) > 0)) {
+                    latestActionable = pCreated;
+                }
+            }
+
             SolrInputDocument d = new SolrInputDocument();
             d.addField("id", "u" + i);
             d.addField("status", status);
@@ -117,6 +142,8 @@ class SolrVsElasticsearchQueryPerfTest {
             d.addField("height", height);
             d.addField("custom_field_" + CF_ID + "_value_4", tier);       // denormalized flat filter field
             d.addField("custom_field_" + CF_ID + "_sort_value", tier);    // denormalized sort key
+            d.addField("_src", "{\"id\":" + i + ",\"promises\":[" + promisesJson + "]}");
+            if (latestActionable != null) d.addField("promises_latest_actionable_at", latestActionable);
             solrBatch.add(d);
 
             esBulk.append("{\"index\":{\"_id\":\"u").append(i).append("\"}}\n")
@@ -125,7 +152,8 @@ class SolrVsElasticsearchQueryPerfTest {
                     .append(",\"height\":").append(height)
                     .append(",\"custom_fields\":[{\"custom_field_id\":").append(CF_ID)
                     .append(",\"value_4\":\"").append(tier).append('"')
-                    .append(",\"sort_value\":\"").append(tier).append("\"}]}\n");
+                    .append(",\"sort_value\":\"").append(tier).append("\"}]")
+                    .append(",\"promises\":[").append(promisesJson).append("]}\n");
 
             if (solrBatch.size() == 2_000) {
                 solrClient.add(CORE, solrBatch);
@@ -154,15 +182,17 @@ class SolrVsElasticsearchQueryPerfTest {
     void solrFilterSortIsFasterThanElasticsearch() throws Exception {
         System.out.printf("%n[QUERY-PERF] docs=%d iterations=%d%n", DOCS, ITERS);
 
+        // All Solr queries fetch fl=_src — the ONLY retrieval shape production uses
+        // (search_docs). ES returns full _source per hit, its equivalent.
         double q1Solr = timeSolr(new SolrQuery("*:*").addFilterQuery("status:2")
-                .setSort("created_at", SolrQuery.ORDER.desc).setRows(20));
+                .setSort("created_at", SolrQuery.ORDER.desc).setRows(20).setFields("_src"));
         double q1Es = timeEs("{\"query\":{\"term\":{\"status\":2}},"
                 + "\"sort\":[{\"created_at\":\"desc\"}],\"size\":20}");
         report("1. top-level filter + sort", q1Solr, q1Es);
 
         double q2Solr = timeSolr(new SolrQuery("*:*")
                 .addFilterQuery("custom_field_" + CF_ID + "_value_4:Gold")
-                .setSort("custom_field_" + CF_ID + "_sort_value", SolrQuery.ORDER.asc).setRows(20));
+                .setSort("custom_field_" + CF_ID + "_sort_value", SolrQuery.ORDER.asc).setRows(20).setFields("_src"));
         double q2Es = timeEs("{\"query\":{\"nested\":{\"path\":\"custom_fields\",\"query\":{\"bool\":{\"must\":["
                 + "{\"term\":{\"custom_fields.custom_field_id\":" + CF_ID + "}},"
                 + "{\"term\":{\"custom_fields.value_4\":\"Gold\"}}]}}}},"
@@ -171,16 +201,27 @@ class SolrVsElasticsearchQueryPerfTest {
         report("2. custom-field filter+sort (Solr flat vs ES NESTED)", q2Solr, q2Es);
 
         double q3Solr = timeSolr(new SolrQuery("*:*").addFilterQuery("height:[170 TO 190]")
-                .setSort("height", SolrQuery.ORDER.desc).setRows(20));
+                .setSort("height", SolrQuery.ORDER.desc).setRows(20).setFields("_src"));
         double q3Es = timeEs("{\"query\":{\"range\":{\"height\":{\"gte\":170,\"lte\":190}}},"
                 + "\"sort\":[{\"height\":\"desc\"}],\"size\":20}");
         report("3. numeric range + sort", q3Solr, q3Es);
 
+        // 4. Dashboard recent-promises page: Solr = the real backend design (top-K users by the
+        //    streamer-derived promises_latest_actionable_at, fl=_src, promises sliced CLIENT-side —
+        //    that client work is timed too); ES = its native server-side nested top_hits agg.
+        double q4Solr = timeSolrDashboard();
+        double q4Es = timeEs("{\"size\":0,\"aggs\":{\"recent\":{\"nested\":{\"path\":\"promises\"},"
+                + "\"aggs\":{\"active\":{\"filter\":{\"terms\":{\"promises.status\":[1,2,4]}},"
+                + "\"aggs\":{\"top\":{\"top_hits\":{"
+                + "\"sort\":[{\"promises.created_at\":{\"order\":\"desc\"}}],\"size\":20,"
+                + "\"_source\":[\"promises.id\",\"promises.status\",\"promises.created_at\"]}}}}}}}}");
+        report("4. dashboard recent promises (top-K+_src vs top_hits)", q4Solr, q4Es);
+
         // Per-query micro-benchmarks are noisy under shared-machine container contention (the
         // custom-field filter+sort in particular runs roughly par with ES). Assert on the AGGREGATE
         // instead: across the representative filter+sort mix, Solr must be at least as fast overall.
-        double solrAvg = (q1Solr + q2Solr + q3Solr) / 3.0;
-        double esAvg = (q1Es + q2Es + q3Es) / 3.0;
+        double solrAvg = (q1Solr + q2Solr + q3Solr + q4Solr) / 4.0;
+        double esAvg = (q1Es + q2Es + q3Es + q4Es) / 4.0;
         System.out.printf(Locale.ROOT, "[QUERY-PERF] AVERAGE  Solr %6.2f ms | ES %6.2f ms | Solr %.2fx%n",
                 solrAvg, esAvg, esAvg / solrAvg);
         assertThat(solrAvg).as("Solr average filter+sort latency must be <= ES").isLessThanOrEqualTo(esAvg);
@@ -191,6 +232,34 @@ class SolrVsElasticsearchQueryPerfTest {
         long start = System.nanoTime();
         for (int i = 0; i < ITERS; i++) solrClient.query(CORE, q);
         return (System.nanoTime() - start) / 1_000_000.0 / ITERS;
+    }
+
+    /** The dashboard page end-to-end, Solr side: sorted top-K fetch + client-side _src parse,
+     *  filter to actionable, sort, slice — the exact work the backend does. */
+    private static double timeSolrDashboard() throws Exception {
+        SolrQuery q = new SolrQuery("*:*")
+                .addFilterQuery("promises_latest_actionable_at:*")
+                .setSort("promises_latest_actionable_at", SolrQuery.ORDER.desc)
+                .setRows(20).setFields("_src");
+        ObjectMapper mapper = new ObjectMapper();
+        for (int i = 0; i < WARMUP; i++) dashboardPage(q, mapper);
+        long start = System.nanoTime();
+        for (int i = 0; i < ITERS; i++) dashboardPage(q, mapper);
+        return (System.nanoTime() - start) / 1_000_000.0 / ITERS;
+    }
+
+    private static List<JsonNode> dashboardPage(SolrQuery q, ObjectMapper mapper) throws Exception {
+        QueryResponse rsp = solrClient.query(CORE, q);
+        List<JsonNode> promises = new ArrayList<>();
+        for (SolrDocument doc : rsp.getResults()) {
+            JsonNode src = mapper.readTree((String) doc.getFieldValue("_src"));
+            for (JsonNode p : src.get("promises")) {
+                int status = p.path("status").asInt();
+                if (status == 1 || status == 2 || status == 4) promises.add(p);
+            }
+        }
+        promises.sort((a, b) -> b.path("created_at").asText().compareTo(a.path("created_at").asText()));
+        return promises.subList(0, Math.min(20, promises.size()));
     }
 
     private static double timeEs(String body) throws Exception {

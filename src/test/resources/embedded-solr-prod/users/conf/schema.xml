@@ -5,7 +5,7 @@
 <schema name="aggregated-user-data" version="1.6">
   <uniqueKey>id</uniqueKey>
 
-  <field name="id" type="string" indexed="true" stored="true" required="true" multiValued="false"/>
+  <field name="id" type="string" indexed="true" stored="true" required="true" multiValued="false" docValues="true"/>  <!-- docValues: id is the tiebreak on every custom-field sort; without dv Solr un-inverts it on heap per searcher (post-commit tail max 51->32ms measured 2026-08-14) -->
   <field name="_src" type="string" indexed="false" stored="true" docValues="false" multiValued="false"/>
   <field name="_version_" type="plong" indexed="true" stored="true"/>
   <field name="_mapping_version" type="string" indexed="true" stored="false" docValues="false" multiValued="false"/>
@@ -22,6 +22,19 @@
   <field name="last_name_sort"  type="string" indexed="false" stored="false" docValues="true" multiValued="false"/>
   <copyField source="first_name" dest="first_name_sort"/>
   <copyField source="last_name"  dest="last_name_sort"/>
+
+  <!-- Scalar sort/range columns pulled OUT of the multiValued catch-all (mirrors prod schema;
+       see that file for the measurement rationale). -->
+  <field name="created_at" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="updated_at" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="birthday" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="conversation_id" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="package_start_date" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="package_end_date" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="package_hold_date" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="last_admin_message_date" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="last_admin_match_date" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="promises_latest_actionable_at" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
 
   <field name="_text" type="text_ci" indexed="true" stored="false" multiValued="true"/>
   <copyField source="email" dest="_text"/>
