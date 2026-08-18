@@ -5,7 +5,8 @@
 <schema name="aggregated-user-data" version="1.6">
   <uniqueKey>id</uniqueKey>
 
-  <field name="id" type="string" indexed="true" stored="true" required="true" multiValued="false" docValues="true"/>  <!-- docValues: id is the tiebreak on every custom-field sort; without dv Solr un-inverts it on heap per searcher (post-commit tail max 51->32ms measured 2026-08-14) -->
+  <!-- id needs docValues: it is the sort tiebreak on every custom-field sort. -->
+  <field name="id" type="string" indexed="true" stored="true" required="true" multiValued="false" docValues="true"/>
   <field name="_src" type="string" indexed="false" stored="true" docValues="false" multiValued="false"/>
   <field name="_version_" type="plong" indexed="true" stored="true"/>
   <field name="_mapping_version" type="string" indexed="true" stored="false" docValues="false" multiValued="false"/>
