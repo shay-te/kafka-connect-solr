@@ -10,7 +10,10 @@
   <field name="_src" type="string" indexed="false" stored="true" docValues="false" multiValued="false"/>
   <field name="_version_" type="plong" indexed="true" stored="true"/>
   <field name="_mapping_version" type="string" indexed="true" stored="false" docValues="false" multiValued="false"/>
-  <field name="location" type="location" indexed="true" stored="false" multiValued="false"/>
+  <!-- docValues REQUIRED: the search-settings filter runs exists(location) (`location:*`), and a
+       Point-based spatial field can only answer FieldExistsQuery from doc values — without it
+       Solr 500s on the dashboard relationship widget and the "searching" user filter. -->
+  <field name="location" type="location" indexed="true" stored="false" docValues="true" multiValued="false"/>
 
   <field name="height" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
   <field name="completion" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
