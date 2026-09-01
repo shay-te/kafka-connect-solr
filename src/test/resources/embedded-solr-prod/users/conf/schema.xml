@@ -75,6 +75,14 @@
     <analyzer>
       <tokenizer class="solr.KeywordTokenizerFactory"/>
       <filter class="solr.LowerCaseFilterFactory"/>
+      <!-- KeywordTokenizer makes the WHOLE value one term, and Lucene REJECTS a term over 32766
+           BYTES — which fails the ENTIRE user document, so one user with a long TEXT_AREA custom
+           field would vanish from search (it is copyField'd into _text too). ES tokenised these
+           fields, so only Solr needs this guard. Drop the over-long token instead: the document
+           still indexes and the user stays findable by every other field. 8000 CHARS is the cap
+           because LengthFilter counts chars and UTF-8 can be 4 bytes each (8000*4 < 32766).
+           (TruncateTokenFilterFactory is not usable here — its prefixLength is a byte, max 127.) -->
+      <filter class="solr.LengthFilterFactory" min="0" max="8000"/>
     </analyzer>
   </fieldType>
 </schema>

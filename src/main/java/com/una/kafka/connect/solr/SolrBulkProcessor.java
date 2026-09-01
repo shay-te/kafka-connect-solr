@@ -38,9 +38,14 @@ import java.util.concurrent.atomic.LongAdder;
  * the ordered buffer into consecutive same-type <em>runs</em> ([add,add,del,add] &rarr;
  * add-batch, delete-batch, add-batch) and one flush task per collection sends those runs
  * <em>sequentially</em> in that order. So [delete@N, create@N+1] for the same key is always
- * applied as delete-then-create — regardless of {@code max.in.flight.requests}. Different
- * collections may still flush concurrently; the in-flight semaphore bounds concurrent Solr
- * requests overall.
+ * applied as delete-then-create <em>within one flush</em>.
+ *
+ * <p><b>Scope of that guarantee:</b> it holds ACROSS flushes only when
+ * {@code max.in.flight.requests=1} (the default), because two successive flushes of the same
+ * collection are separate tasks and would otherwise run concurrently. With
+ * {@code max.in.flight.requests>1} you MUST also set {@code kafka.offset.version.field} and a
+ * Solr DocBasedVersionConstraints processor on it — {@link Validator} rejects the combination
+ * otherwise. Different collections may always flush concurrently.
  */
 public final class SolrBulkProcessor implements AutoCloseable {
 
@@ -204,6 +209,18 @@ public final class SolrBulkProcessor implements AutoCloseable {
             flushOne(e.getKey(), e.getValue());
         }
         lastFlushNanos = System.nanoTime();
+        // Surface a worker failure reaped above. In async mode NOTHING else inspects it — Kafka
+        // Connect calls the overridden preCommit (flushAsync), never flush()/flushSync() — so
+        // without this a task whose batches all fail stays RUNNING forever: offsets pinned at the
+        // earliest unacked record and the AsyncOffsetTracker's pending deques growing until OOM.
+        throwIfReaped();
+    }
+
+    private void throwIfReaped() {
+        Throwable reaped = reapedFailure.getAndSet(null);
+        if (reaped != null) {
+            throw asFlushError(reaped);
+        }
     }
 
     /**
@@ -272,14 +289,10 @@ public final class SolrBulkProcessor implements AutoCloseable {
     }
 
     public void flushSync() {
-        flushAsync();
-        // A worker that failed before this flush ran was reaped above; surface it now so the
+        // flushAsync already reaps and rethrows a worker that failed before this flush ran, so the
         // failure is never silently committed over. Early exit leaves remaining futures in
         // flight — same at-least-once story as a mid-drain failure below.
-        Throwable reaped = reapedFailure.getAndSet(null);
-        if (reaped != null) {
-            throw asFlushError(reaped);
-        }
+        flushAsync();
         Future<?> f;
         long deadline = System.currentTimeMillis() + flushTimeoutMs;
         while ((f = inflight.poll()) != null) {
@@ -379,7 +392,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
                         totalRetries);
             } catch (RuntimeException e) {
                 if (e instanceof RetriableException || behaviorOnMalformed == BehaviorOnMalformed.FAIL) {
-                    recordsFailed.add(size);
+                    failed(size);
                     throw e;
                 }
                 // Non-retriable Solr rejection with WARN/IGNORE: at least one doc in this run
@@ -427,7 +440,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
                         totalRetries);
             } catch (RuntimeException e) {
                 if (e instanceof RetriableException || behaviorOnMalformed == BehaviorOnMalformed.FAIL) {
-                    recordsFailed.add(size);
+                    failed(size);
                     throw e;
                 }
                 // Non-retriable Solr rejection with WARN/IGNORE: isolate the poison id-by-id.
@@ -468,10 +481,22 @@ public final class SolrBulkProcessor implements AutoCloseable {
             try {
                 sendOne(collection, delete ? null : docs.get(i), delete ? ids.get(i) : null, states.get(i));
             } catch (RetriableException re) {
-                recordsFailed.add(size - i);
+                failed(size - i);
                 throw re;
             }
         }
+    }
+
+    /**
+     * Count ops as failed AND drop them from the buffered-record gauge. queueDepth is incremented
+     * once per buffered op and only ever decremented on a SUCCESSFUL send, so without this a single
+     * exhausted-retry batch leaves the gauge permanently above {@code max.buffered.records} —
+     * {@link #checkGlobalThresholds()} then fires a flush for EVERY subsequent record, collapsing
+     * batching into one Solr request per document for the rest of the task's life.
+     */
+    private void failed(int count) {
+        recordsFailed.add(count);
+        queueDepth.add(-count);
     }
 
     /**

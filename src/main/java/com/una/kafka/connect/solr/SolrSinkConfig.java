@@ -24,7 +24,6 @@ public class SolrSinkConfig extends AbstractConfig {
     public static final String CONNECTION_COMPRESSION_CONFIG = "connection.compression";
     public static final String CONNECTION_COMPRESSION_ALGORITHM_CONFIG = "connection.compression.algorithm";
     public static final String CONNECTION_COMPRESSION_REQUESTS_CONFIG = "connection.compression.requests";
-    public static final String MAX_CONNECTION_IDLE_TIME_MS_CONFIG = "max.connection.idle.time.ms";
 
     // -- Proxy --
     public static final String PROXY_HOST_CONFIG = "proxy.host";
@@ -42,14 +41,10 @@ public class SolrSinkConfig extends AbstractConfig {
     public static final String SSL_TRUSTSTORE_PASSWORD_CONFIG = "ssl.truststore.password";
     public static final String SSL_TRUSTSTORE_TYPE_CONFIG = "ssl.truststore.type";
     public static final String SSL_PROTOCOL_CONFIG = "ssl.protocol";
-    public static final String SSL_ENABLED_PROTOCOLS_CONFIG = "ssl.enabled.protocols";
-    public static final String SSL_CIPHER_SUITES_CONFIG = "ssl.cipher.suites";
-    public static final String SSL_ENDPOINT_VERIFICATION_CONFIG = "ssl.endpoint.identification.algorithm";
 
     // -- Kerberos --
     public static final String KERBEROS_PRINCIPAL_CONFIG = "kerberos.user.principal";
     public static final String KERBEROS_KEYTAB_PATH_CONFIG = "kerberos.keytab.path";
-    public static final String KERBEROS_TICKET_RENEW_WINDOW_FACTOR_CONFIG = "kerberos.ticket.renew.window.factor";
 
     // -- Behaviour --
     public static final String KEY_IGNORE_CONFIG = "key.ignore";
@@ -169,9 +164,6 @@ public class SolrSinkConfig extends AbstractConfig {
         def.define(READ_TIMEOUT_MS_CONFIG, Type.INT, 60_000, Importance.LOW,
                 "HTTP socket read timeout in ms.",
                 g, ++order, Width.SHORT, "Read timeout");
-        def.define(MAX_CONNECTION_IDLE_TIME_MS_CONFIG, Type.LONG, 60_000L, Importance.LOW,
-                "Max time the underlying HTTP/2 client keeps an idle connection alive.",
-                g, ++order, Width.SHORT, "Max idle ms");
         def.define(CONNECTION_COMPRESSION_CONFIG, Type.BOOLEAN, false, Importance.LOW,
                 "Enable response payload compression (Accept-Encoding header).",
                 g, ++order, Width.SHORT, "Compression");
@@ -230,15 +222,6 @@ public class SolrSinkConfig extends AbstractConfig {
         def.define(SSL_PROTOCOL_CONFIG, Type.STRING, "TLSv1.3", Importance.LOW,
                 "Default SSL protocol.",
                 g, ++order, Width.SHORT, "TLS protocol");
-        def.define(SSL_ENABLED_PROTOCOLS_CONFIG, Type.LIST, "TLSv1.3,TLSv1.2", Importance.LOW,
-                "Enabled protocol list.",
-                g, ++order, Width.MEDIUM, "Enabled protocols");
-        def.define(SSL_CIPHER_SUITES_CONFIG, Type.LIST, "", Importance.LOW,
-                "Optional explicit cipher-suite list. Empty = JVM defaults (recommended).",
-                g, ++order, Width.LONG, "Cipher suites");
-        def.define(SSL_ENDPOINT_VERIFICATION_CONFIG, Type.STRING, "HTTPS", Importance.LOW,
-                "Hostname verification (HTTPS) or '' to disable.",
-                g, ++order, Width.SHORT, "Endpoint id alg");
 
         // -- Kerberos --
         g = "Kerberos";
@@ -249,9 +232,6 @@ public class SolrSinkConfig extends AbstractConfig {
         def.define(KERBEROS_KEYTAB_PATH_CONFIG, Type.STRING, "", Importance.LOW,
                 "Path to the keytab.",
                 g, ++order, Width.LONG, "Keytab path");
-        def.define(KERBEROS_TICKET_RENEW_WINDOW_FACTOR_CONFIG, Type.DOUBLE, 0.8, Importance.LOW,
-                "Fraction of TGT lifetime to elapse before automatic renew.",
-                g, ++order, Width.SHORT, "TGT renew factor");
 
         // -- Behaviour --
         g = "Behavior";
@@ -303,8 +283,12 @@ public class SolrSinkConfig extends AbstractConfig {
                         + "false = preCommit returns offsets only for writes whose ack arrived; "
                         + "much higher throughput when Solr is slow.",
                 g, ++order, Width.SHORT, "Flush synchronously");
-        def.define(MAX_IN_FLIGHT_REQUESTS_CONFIG, Type.INT, 8, Importance.MEDIUM,
-                "Concurrent Solr requests per task. Default 8 (HTTP/2 multiplexes over one connection).",
+        def.define(MAX_IN_FLIGHT_REQUESTS_CONFIG, Type.INT, 1, Importance.MEDIUM,
+                "Concurrent Solr requests per task. Default 1 = strict Kafka-offset apply order. "
+                        + "Raising it only preserves order when " + KAFKA_OFFSET_VERSION_FIELD_CONFIG
+                        + " is set (with a DocBasedVersionConstraints processor on that field); "
+                        + "otherwise concurrent batches can land out of order and an older update "
+                        + "can overwrite a newer one.",
                 g, ++order, Width.SHORT, "Max in-flight");
         def.define(MAX_BUFFERED_RECORDS_CONFIG, Type.INT, 20_000, Importance.MEDIUM,
                 "Maximum buffered records across all in-flight batches.",
@@ -446,7 +430,6 @@ public class SolrSinkConfig extends AbstractConfig {
     }
     public int connectionTimeoutMs() { return getInt(CONNECTION_TIMEOUT_MS_CONFIG); }
     public int readTimeoutMs() { return getInt(READ_TIMEOUT_MS_CONFIG); }
-    public long maxConnectionIdleMs() { return getLong(MAX_CONNECTION_IDLE_TIME_MS_CONFIG); }
     public boolean connectionCompression() { return getBoolean(CONNECTION_COMPRESSION_CONFIG); }
     public CompressionAlgorithm compressionAlgorithm() {
         return CompressionAlgorithm.parse(getString(CONNECTION_COMPRESSION_ALGORITHM_CONFIG));
@@ -477,13 +460,9 @@ public class SolrSinkConfig extends AbstractConfig {
     }
     public String sslTruststoreType() { return getString(SSL_TRUSTSTORE_TYPE_CONFIG); }
     public String sslProtocol() { return getString(SSL_PROTOCOL_CONFIG); }
-    public List<String> sslEnabledProtocols() { return getList(SSL_ENABLED_PROTOCOLS_CONFIG); }
-    public List<String> sslCipherSuites() { return getList(SSL_CIPHER_SUITES_CONFIG); }
-    public String sslEndpointIdentificationAlgorithm() { return getString(SSL_ENDPOINT_VERIFICATION_CONFIG); }
 
     public String kerberosPrincipal() { return getString(KERBEROS_PRINCIPAL_CONFIG); }
     public String kerberosKeytabPath() { return getString(KERBEROS_KEYTAB_PATH_CONFIG); }
-    public double kerberosRenewWindowFactor() { return getDouble(KERBEROS_TICKET_RENEW_WINDOW_FACTOR_CONFIG); }
     public boolean kerberosEnabled() {
         return kerberosPrincipal() != null && !kerberosPrincipal().isEmpty()
                 && kerberosKeytabPath() != null && !kerberosKeytabPath().isEmpty();

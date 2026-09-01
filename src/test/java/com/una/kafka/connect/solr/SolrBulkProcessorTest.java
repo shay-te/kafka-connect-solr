@@ -215,4 +215,44 @@ class SolrBulkProcessorTest {
         assertThat(s2.isAcked()).isTrue();
         bulk.close();
     }
+
+    @Test
+    void queueDepthReturnsToZeroAfterAPermanentlyFailedBatch() throws Exception {
+        // queueDepth gates checkGlobalThresholds(): if a failed batch's ops are never subtracted,
+        // the gauge stays above max.buffered.records forever and every later record flushes on
+        // its own — batching silently collapses to one Solr request per document.
+        SolrClient client = mock(SolrClient.class);
+        when(client.request(any(UpdateRequest.class), anyString()))
+                .thenThrow(new BaseHttpSolrClient.RemoteSolrException("h", 400, "bad doc", null));
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()));
+
+        bulk.upsert("c", doc("1"), null);
+        bulk.upsert("c", doc("2"), null);
+        assertThatThrownBy(bulk::flushSync).isInstanceOf(RuntimeException.class);
+
+        assertThat(bulk.recordsFailed()).isEqualTo(2);
+        assertThat(bulk.queueDepth()).isZero();
+        bulk.close();
+    }
+
+    @Test
+    void flushAsyncSurfacesAFailureReapedFromAPreviousBatch() throws Exception {
+        // Async mode (flush.synchronously=false) never calls flushSync, so flushAsync is the only
+        // place a worker failure can reach Kafka Connect. Without it the task stays RUNNING while
+        // every batch fails and the offset tracker's pending queues grow unbounded.
+        SolrClient client = mock(SolrClient.class);
+        when(client.request(any(UpdateRequest.class), anyString()))
+                .thenThrow(new BaseHttpSolrClient.RemoteSolrException("h", 400, "bad doc", null));
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(new HashMap<>()));
+
+        bulk.upsert("c", doc("1"), null);
+        bulk.upsert("c", doc("2"), null);   // batch.size=2 -> submitted, fails on its own thread
+        for (int i = 0; i < 200 && bulk.recordsFailed() == 0; i++) {
+            Thread.sleep(5);
+        }
+
+        assertThatThrownBy(bulk::flushAsync)
+                .hasMessageContaining("Solr rejected a document");
+        bulk.close();
+    }
 }

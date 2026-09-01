@@ -21,7 +21,9 @@ class SolrSinkConfigTest {
     void defaultsAreSensible() {
         SolrSinkConfig cfg = new SolrSinkConfig(base());
         assertThat(cfg.batchSize()).isEqualTo(2000);
-        assertThat(cfg.maxInFlight()).isEqualTo(8);
+        // 1, not a throughput-first default: >1 reorders concurrent batches unless
+        // kafka.offset.version.field is configured (Validator enforces the pair).
+        assertThat(cfg.maxInFlight()).isEqualTo(1);
         assertThat(cfg.behaviorOnNullValues()).isEqualTo(SolrSinkConfig.BehaviorOnNullValues.IGNORE);
         assertThat(cfg.behaviorOnMalformed()).isEqualTo(SolrSinkConfig.BehaviorOnMalformed.FAIL);
         assertThat(cfg.writeMethod()).isEqualTo(SolrSinkConfig.WriteMethod.INDEX);

@@ -35,6 +35,18 @@ class ValidatorTest {
     }
 
     @Test
+    void omittedInFlightIsOrderSafeAndPassesValidation() {
+        // The check reads raw props, so an OMITTED max.in.flight.requests must resolve to the
+        // ConfigDef default. That default is 1 — a bare config is ordering-safe and validates
+        // clean. (When the default was 8 this same config silently shipped unguarded.)
+        Map<String, String> p = valid();
+        assertThat(p).doesNotContainKey(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG);
+        Config result = new SolrSinkConnector().validate(p);
+        assertThat(hasErrorFor(result, SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG)).isFalse();
+        assertThat(new SolrSinkConfig(p).maxInFlight()).isEqualTo(1);
+    }
+
+    @Test
     void requiresConnection() {
         Map<String, String> p = new HashMap<>();
         Config result = new SolrSinkConnector().validate(p);

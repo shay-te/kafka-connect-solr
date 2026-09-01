@@ -7,6 +7,7 @@ import com.una.kafka.connect.solr.SolrSinkConfig.BehaviorOnNullValues;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.header.Header;
+import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.common.SolrInputDocument;
@@ -163,8 +164,14 @@ public final class SolrWriter implements AutoCloseable {
             }
             OffsetState state = offsetTracker.track(record);
             // Converter accumulates the byte estimate during field building when bulk.size.bytes>0,
-            // letting SolrBulkProcessor skip the second-pass walk of the doc.
-            bulk.upsert(collection, doc, converter.lastConversionByteEstimate(), state);
+            // letting SolrBulkProcessor skip the second-pass walk of the doc. The fields added
+            // AFTER convert() — source.field above all, which is the whole record again — are not
+            // in that running total, so fall back to a full walk when they are present or a batch
+            // would run at roughly twice the configured byte cap.
+            long bytes = sourceField.isEmpty()
+                    ? converter.lastConversionByteEstimate()
+                    : -1L;
+            bulk.upsert(collection, doc, bytes, state);
         } catch (DataException de) {
             handleMalformed(record, de);
         }
@@ -172,9 +179,12 @@ public final class SolrWriter implements AutoCloseable {
 
     private static String toSourceJson(Object value, String[] excludePrefixes) {
         try {
-            Object toSerialize = value;
-            if (excludePrefixes.length > 0 && value instanceof java.util.Map) {
-                java.util.Map<?, ?> source = (java.util.Map<?, ?>) value;
+            // Jackson finds no bean properties on a Connect Struct and refuses to serialize it, so
+            // a schema'd record would make EVERY document malformed. Flatten to a plain Map first.
+            Object plain = value instanceof Struct ? structToMap((Struct) value) : value;
+            Object toSerialize = plain;
+            if (excludePrefixes.length > 0 && plain instanceof java.util.Map) {
+                java.util.Map<?, ?> source = (java.util.Map<?, ?>) plain;
                 java.util.Map<Object, Object> filtered = new java.util.LinkedHashMap<>(source.size());
                 for (java.util.Map.Entry<?, ?> entry : source.entrySet()) {
                     if (!startsWithAny(String.valueOf(entry.getKey()), excludePrefixes)) {
@@ -188,6 +198,34 @@ public final class SolrWriter implements AutoCloseable {
             // Malformed value -> DataException routes it through behavior.on.malformed (DLQ/skip).
             throw new DataException("Failed to serialize record value for the source field", e);
         }
+    }
+
+    /** Recursively renders a Struct (and any nested Struct/List/Map) as Jackson-serializable data. */
+    private static Object structToMap(Object value) {
+        if (value instanceof Struct) {
+            Struct struct = (Struct) value;
+            java.util.List<org.apache.kafka.connect.data.Field> fields = struct.schema().fields();
+            java.util.Map<String, Object> out = new java.util.LinkedHashMap<>(fields.size() * 4 / 3 + 1);
+            for (org.apache.kafka.connect.data.Field field : fields) {
+                out.put(field.name(), structToMap(struct.get(field)));
+            }
+            return out;
+        }
+        if (value instanceof java.util.List) {
+            java.util.List<?> list = (java.util.List<?>) value;
+            java.util.List<Object> out = new java.util.ArrayList<>(list.size());
+            for (Object item : list) out.add(structToMap(item));
+            return out;
+        }
+        if (value instanceof java.util.Map) {
+            java.util.Map<?, ?> map = (java.util.Map<?, ?>) value;
+            java.util.Map<String, Object> out = new java.util.LinkedHashMap<>(map.size() * 4 / 3 + 1);
+            for (java.util.Map.Entry<?, ?> entry : map.entrySet()) {
+                out.put(String.valueOf(entry.getKey()), structToMap(entry.getValue()));
+            }
+            return out;
+        }
+        return value;
     }
 
     private static boolean startsWithAny(String name, String[] prefixes) {

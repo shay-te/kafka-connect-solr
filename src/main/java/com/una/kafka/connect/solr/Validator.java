@@ -112,7 +112,14 @@ public final class Validator {
     }
 
     private static void requireOrderingSafety(Map<String, ConfigValue> v, Map<String, String> p) {
+        // Fall back to the ConfigDef default (8) when the key is absent: an omitted
+        // max.in.flight.requests is still >1 at runtime, so skipping the check on `null` would
+        // let the DEFAULT — the config most people ship — through unguarded.
         Integer inFlight = asInt(p.get(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG));
+        if (inFlight == null) {
+            inFlight = (Integer) SolrSinkConfig.config()
+                    .configKeys().get(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG).defaultValue;
+        }
         if (inFlight == null || inFlight <= 1) {
             return;
         }

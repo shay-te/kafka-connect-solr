@@ -215,4 +215,32 @@ class SolrRecordConverterTest {
         assertThat(tags).containsExactly("a", "b");
         assertThat(doc.getFieldValue("addr.city")).isEqualTo("NYC");
     }
+
+    @Test
+    void byteBufferEncodesOnlyTheRemainingBytesAndHandlesNonArrayBuffers() {
+        // ByteBuffer.array() returns the WHOLE backing array (wrong for a slice) and throws on a
+        // read-only or direct buffer — both of which an Avro/Protobuf converter can hand us.
+        SolrRecordConverter converter = new SolrRecordConverter(newConfig(new HashMap<>()));
+        Schema schema = SchemaBuilder.struct()
+                .field("sliced", Schema.BYTES_SCHEMA)
+                .field("readOnly", Schema.BYTES_SCHEMA)
+                .field("direct", Schema.BYTES_SCHEMA)
+                .build();
+        byte[] backing = {9, 9, 1, 2, 3, 9};
+        ByteBuffer direct = ByteBuffer.allocateDirect(2);
+        direct.put(new byte[]{7, 8}).flip();
+        Struct value = new Struct(schema)
+                .put("sliced", ByteBuffer.wrap(backing, 2, 3).slice())
+                .put("readOnly", ByteBuffer.wrap(new byte[]{1, 2, 3}).asReadOnlyBuffer())
+                .put("direct", direct);
+
+        SolrInputDocument doc = converter.convert(
+                new SinkRecord("t", 0, Schema.STRING_SCHEMA, "k", schema, value, 1L));
+
+        String expected = java.util.Base64.getEncoder().encodeToString(new byte[]{1, 2, 3});
+        assertThat(doc.getFieldValue("sliced")).isEqualTo(expected);
+        assertThat(doc.getFieldValue("readOnly")).isEqualTo(expected);
+        assertThat(doc.getFieldValue("direct"))
+                .isEqualTo(java.util.Base64.getEncoder().encodeToString(new byte[]{7, 8}));
+    }
 }

@@ -75,7 +75,7 @@ This is where most of our advantage over the ES connector comes from:
 | Wire format | JSON | **javabin (binary, SolrJ default)** |
 | Concurrency model | N TCP connections | **1 connection, N concurrent streams** |
 | Per-stream blocking | head-of-line on connection | none (HTTP/2 frames interleave) |
-| Default `max.in.flight.requests` | 5 | **8** |
+| Default `max.in.flight.requests` | 5 | 1 (order-safe; raise with `kafka.offset.version.field`) |
 | Response compression | gzip optional | **gzip + zstd opt-in** |
 
 Concretely: at 8 in-flight requests with 1 KB documents and 5 ms RTT,
@@ -197,45 +197,17 @@ Recommendation: don't. The current code is already past the point of
 diminishing returns on layer 1. Only worth it if a future profile
 shows allocation pressure on the SinkTask hot path.
 
-### 6. WKBToLatLon SMT cost on every CDC record — ★
+### 6. WKBToLatLon SMT cost on every CDC record — RESOLVED (removed)
 
-The `WKBToLatLon` Single-Message Transform (`transforms.WKBToLatLon` in
-`scripts/debezium_setup.py`) converts PostGIS WKB byte arrays in the
-`location` column into Solr's `lat,lon` string format. It runs **per
-record** on every Kafka message that has a `location` payload — which
-for this app is most records (users have geo coordinates).
+The `WKBToLatLon` SMT parsed PostGIS WKB into Solr's `lat,lon` string once per record, which was
+order-of-magnitude larger than any micro-optimisation inside the connector. It has been removed:
+Postgres now emits the value directly via the `location_text` generated column
+(`ST_X`/`ST_Y`), renamed on the wire by Debezium's `renameLocation` SMT. See
+`ob-love-admin-backend/scripts/migrations/2026_06_08_add_user_location_text.sql`.
 
-Per-record cost (see `WKBToLatLon.java`):
-
-- One `Map`/`Struct` copy (the SMT can't mutate the input record).
-- WKB parse via `WKBReader` (`Geometry geom = WKB_READER.get().read(wkb)`).
-- New `SourceRecord` allocation with the transformed value.
-
-This is order-of-magnitude **larger** than any of the per-record
-micro-optimisations we made inside the connector itself. If geo data
-volume justifies it, the right fix is to move the conversion **upstream**:
-
-- **Best:** have the source emit `lat,lon` directly. PostGIS can output
-  `ST_X(location)`, `ST_Y(location)` as separate columns; expose those
-  in the Debezium `column.include.list` instead of (or in addition to)
-  the raw WKB.
-- **Acceptable:** run the SMT in the Debezium source connector instead
-  of the Solr sink connector. Same CPU cost but on a different worker
-  pool, freeing the sink task for indexing throughput.
-- **Last resort:** optimise the SMT itself. Note that `WKB_READER` and
-  `LATLON_BUILDER` are already `ThreadLocal`-pooled
-  (`WKBToLatLon.java` lines 33–36), so the obvious "pool the reader"
-  win is already taken. The remaining costs are the unavoidable per-record
-  `SourceRecord` allocation and the Map/Struct copy that Kafka Connect's
-  SMT contract requires (you cannot mutate the input record). Removing
-  those would mean rewriting the SMT as a Connect *transformation chain*
-  position-aware mutator — invasive, ~150 LOC, single-digit percent win.
-
-Recommendation: **investigate before optimising.** Profile the kstreams
-output with the SMT in vs out (`mvn test -Pperf` with and without
-`transforms=WKBToLatLon`) to confirm whether it actually shows up as a
-hot spot in your real workload. If it does, the upstream-emit fix is
-the cleanest answer; if it doesn't, leave it alone.
+That was the "best" option this section originally recommended — push the conversion upstream so
+the per-record parse, the Map/Struct copy and the extra record allocation all disappear. The
+transform class and its `jts-core` dependency are gone with it.
 
 ## Tuning recipes
 

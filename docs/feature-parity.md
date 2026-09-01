@@ -13,7 +13,7 @@ row is ✅. Where we go further (do it better) it's 🟢.
 | `connection.password` | `connection.password` | ✅ |
 | `batch.size` | `batch.size` | ✅ |
 | `bulk.size.bytes` | `bulk.size.bytes` | ✅ |
-| `max.in.flight.requests` | `max.in.flight.requests` | 🟢 (default 8 vs ES 5; HTTP/2 multiplexed) |
+| `max.in.flight.requests` | `max.in.flight.requests` | 🟢 (default 1 for strict apply order; HTTP/2 multiplexed when raised) |
 | `max.buffered.records` | `max.buffered.records` | ✅ |
 | `linger.ms` | `linger.ms` | ✅ |
 | `flush.timeout.ms` | `flush.timeout.ms` | ✅ |
@@ -21,7 +21,7 @@ row is ✅. Where we go further (do it better) it's 🟢.
 | `max.retries` | `max.retries` | ✅ |
 | `retry.backoff.ms` | `retry.backoff.ms` | ✅ |
 | `connection.compression` | `connection.compression` | 🟢 (gzip + zstd; ES only gzip) |
-| `max.connection.idle.time.ms` | `max.connection.idle.time.ms` | ✅ |
+| `max.connection.idle.time.ms` | — | 🔴 not supported — idle timeout is `read.timeout.ms` |
 | `connection.timeout.ms` | `connection.timeout.ms` | ✅ |
 | `read.timeout.ms` | `read.timeout.ms` | ✅ |
 | `topic.key.ignore` | `topic.key.ignore` | ✅ |
@@ -47,9 +47,9 @@ row is ✅. Where we go further (do it better) it's 🟢.
 | `ssl.truststore.password` | `ssl.truststore.password` | ✅ |
 | `ssl.truststore.type` | `ssl.truststore.type` | ✅ |
 | `ssl.protocol` | `ssl.protocol` | 🟢 (defaults TLSv1.3; ES defaults TLSv1.2) |
-| `ssl.enabled.protocols` | `ssl.enabled.protocols` | ✅ |
-| `ssl.cipher.suites` | `ssl.cipher.suites` | ✅ |
-| `ssl.endpoint.identification.algorithm` | `ssl.endpoint.identification.algorithm` | ✅ |
+| `ssl.enabled.protocols` | — | 🔴 not supported — JVM default protocol set |
+| `ssl.cipher.suites` | — | 🔴 not supported — JVM default cipher list |
+| `ssl.endpoint.identification.algorithm` | — | 🔴 not supported — SolrJ SSLConfig always verifies hostnames |
 | `kerberos.user.principal` | `kerberos.user.principal` | ✅ |
 | `kerberos.keytab.path` | `kerberos.keytab.path` | 🟢 (in-memory JAAS — no krb5.conf required) |
 | `kerberos.ticket.renew.window.factor` | `kerberos.ticket.renew.window.factor` | 🟢 (ES doesn't auto-renew TGTs) |

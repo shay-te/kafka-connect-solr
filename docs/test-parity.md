@@ -181,7 +181,5 @@ The connector-side validation we DO own is in:
 - `SolrRecordConverterTest.atomicUpdateWrapsSetOps` — Solr atomic `{"set":...}`.
 - `SolrRecordConverterTest.topicPartitionOffsetIdStrategy`, `uuidIdStrategy`, `recordFieldIdStrategyFromMapWithDotPath` — id strategies unique to this connector.
 - `SolrClientFactoryTest.buildsCloudClient` — SolrCloud-only path.
-- `WKBToLatLonTest.*` — PostGIS WKB → Solr LatLonPointSpatialField.
-- `SolrVersionDetectorTest.*` — Solr `/admin/info/system` probe.
 - `SolrBulkProcessorStressTest.concurrentBatchesBeatSequentialUnderLatency` — HTTP/2 multiplexing throughput.
 - `SolrVsElasticsearchPerfTest.solrIsFasterThanElasticsearch` — head-to-head benchmark.

@@ -1,6 +1,5 @@
 package com.una.kafka.connect.solr;
 
-import com.una.kafka.connect.solr.transforms.WKBToLatLon;
 import org.apache.kafka.connect.data.Date;
 import org.apache.kafka.connect.data.Decimal;
 import org.apache.kafka.connect.data.Schema;
@@ -25,15 +24,17 @@ import java.util.regex.Pattern;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The whole pipeline, "from Point to whatever": a real WKB geometry decoded by
- * {@link WKBToLatLon}, then a Struct carrying EVERY Kafka Connect data type — the 8 primitives,
- * the 4 logical types, BYTES as both byte[] and ByteBuffer, arrays, nested structs, and a map —
- * pushed through {@link SolrRecordConverter}. Real values in, exact Solr fields asserted out.
+ * The whole pipeline: a Struct carrying EVERY Kafka Connect data type — the 8 primitives, the 4
+ * logical types, BYTES as both byte[] and ByteBuffer, arrays, nested structs, and a map — pushed
+ * through {@link SolrRecordConverter}. Real values in, exact Solr fields asserted out.
+ *
+ * <p>`location` arrives as the "lat,lon" string Postgres now emits via the location_text
+ * generated column (the WKB-decoding SMT was removed once the DB produced the value directly).</p>
  */
 class FullPipelineAllTypesTest {
 
-    /** Empire State Building, as PostGIS WKB hex (a real Point geometry). */
-    private static final String POINT_WKB_HEX = "0101000000F1F44A5986F652C03333333333584440";
+    /** Empire State Building, in the "lat,lon" form the location_text column emits. */
+    private static final String POINT_LAT_LON = "40.7484,-73.9857";
     private static final Pattern LAT_LON = Pattern.compile("^-?\\d+(\\.\\d+)?,-?\\d+(\\.\\d+)?$");
 
     private SolrSinkConfig config() {
@@ -44,18 +45,12 @@ class FullPipelineAllTypesTest {
     }
 
     @Test
-    void everyDataTypeSurvivesWkbTransformThroughConversion() {
-        // --- STEP 1: a Point geometry (WKB hex) decoded by the real transform ---
-        WKBToLatLon<SourceRecord> geo = new WKBToLatLon<>();
-        Map<String, Object> geoCfg = new HashMap<>();
-        geoCfg.put("field", "location");     // decode "location" WKB -> "lat,lon" (same field)
-        geo.configure(geoCfg);
-
+    void everyDataTypeSurvivesConversion() {
         Schema geoPoint = SchemaBuilder.struct().name("Geo")
                 .field("lat", Schema.FLOAT64_SCHEMA).field("lon", Schema.FLOAT64_SCHEMA).build();
 
         Schema schema = SchemaBuilder.struct()
-                .field("location",   Schema.STRING_SCHEMA)       // WKB hex in, "lat,lon" out
+                .field("location",   Schema.STRING_SCHEMA)       // "lat,lon" from location_text
                 .field("i8",         Schema.INT8_SCHEMA)
                 .field("i16",        Schema.INT16_SCHEMA)
                 .field("i32",        Schema.INT32_SCHEMA)
@@ -77,7 +72,7 @@ class FullPipelineAllTypesTest {
 
         byte[] avatar = "avatar".getBytes();
         Struct value = new Struct(schema)
-                .put("location",   POINT_WKB_HEX)
+                .put("location",   POINT_LAT_LON)
                 .put("i8",         (byte) 7)
                 .put("i16",        (short) 1234)
                 .put("i32",        42)
@@ -96,20 +91,12 @@ class FullPipelineAllTypesTest {
                 .put("home",       new Struct(geoPoint).put("lat", 40.7).put("lon", -74.0))
                 .put("attrs",      Map.of("floor", 102));
 
-        SourceRecord transformed = geo.apply(new SourceRecord(null, null, "t", 0, schema, value));
-        Struct decoded = (Struct) transformed.value();
-
-        // Point decoded to a Solr-ready lat,lon string.
-        String latLon = decoded.getString("location");
-        assertThat(LAT_LON.matcher(latLon).matches()).as("WKB Point -> lat,lon: %s", latLon).isTrue();
-
-        // --- STEP 2: the real converter turns it into a Solr document ---
+        // --- the real converter turns it into a Solr document ---
         SolrRecordConverter converter = new SolrRecordConverter(config());
         SolrInputDocument doc = converter.convert(
-                new SinkRecord("users", 0, Schema.STRING_SCHEMA, "u1",
-                        decoded.schema(), decoded, 5L));
+                new SinkRecord("users", 0, Schema.STRING_SCHEMA, "u1", schema, value, 5L));
 
-        // --- STEP 3: EVERY type asserted in the emitted document ---
+        // --- EVERY type asserted in the emitted document ---
         assertThat(doc.getFieldValue("id")).isEqualTo("u1");
         assertThat(LAT_LON.matcher((String) doc.getFieldValue("location")).matches()).isTrue();
         assertThat(doc.getFieldValue("i8")).isEqualTo((byte) 7);

@@ -147,7 +147,6 @@ class SolrSinkConfigCoverageTest {
         // Touch every defaulted getter to lock in the no-throw contract for downstream callers.
         c.connectionTimeoutMs();
         c.readTimeoutMs();
-        c.maxConnectionIdleMs();
         c.connectionCompression();
         c.compressionAlgorithm();
         c.compressRequests();
@@ -160,12 +159,8 @@ class SolrSinkConfigCoverageTest {
         c.sslTruststoreLocation();
         c.sslTruststoreType();
         c.sslProtocol();
-        c.sslEnabledProtocols();
-        c.sslCipherSuites();
-        c.sslEndpointIdentificationAlgorithm();
         c.kerberosPrincipal();
         c.kerberosKeytabPath();
-        c.kerberosRenewWindowFactor();
         c.keyIgnore();
         c.schemaIgnore();
         c.compactMapEntries();

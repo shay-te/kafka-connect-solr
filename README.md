@@ -7,9 +7,12 @@ so moving a sink config from Elasticsearch to Solr is a drop-in change.
 
 Performance: the connector uses SolrJ's `Http2SolrClient` so multiple
 in-flight requests share a single connection, and an internal executor
-pool drives `max.in.flight.requests` (default 8 vs Confluent ES default 5)
-concurrent batches per task. This typically beats the Elasticsearch
-connector on the same hardware on commit-bound workloads.
+pool drives `max.in.flight.requests` concurrent batches per task. It
+defaults to `1` (strict apply order); raise it once the ordering guard
+below is in place. Measured against the Elasticsearch connector on the
+same hardware (`docs/benchmark.md`, 2026-08-23, median of 3 runs): 2.9x on
+bulk insert, 2.4x on update, 9.2x on delete, ~1.5x on filter/sort, ~1.2x on
+the query suite.
 
 Package: `com.una.kafka.connect.solr`
 
@@ -30,8 +33,7 @@ Package: `com.una.kafka.connect.solr`
 SolrRecordConverter  SolrBulkProcessor  SolrSchemaManager  CollectionResolver
 ```
 
-Helpers: `SolrClientFactory`, `SolrVersionDetector`, `RetryUtil`,
-`transforms.WKBToLatLon` (PostGIS WKB -> Solr `LatLonPointSpatialField`).
+Helpers: `SolrClientFactory`, `RetryUtil`.
 
 ## Configuration (mirrors the Elasticsearch sink)
 
@@ -51,7 +53,7 @@ Helpers: `SolrClientFactory`, `SolrVersionDetector`, `RetryUtil`,
 | `batch.size`                 | `2000`      | Records per bulk update                                            |
 | `linger.ms`                  | `50`        | Time to wait while filling a batch                                 |
 | `flush.timeout.ms`           | `30000`     | Max wait when flushing                                             |
-| `max.in.flight.requests`     | `8`         | Concurrent Solr requests per task                                  |
+| `max.in.flight.requests`     | `1`         | Concurrent Solr requests per task; >1 needs `kafka.offset.version.field` |
 | `max.buffered.records`       | `20000`     | Back-pressure threshold                                            |
 | `max.retries`                | `5`         | Max attempts on retryable failures                                 |
 | `retry.backoff.ms`           | `200`       | Initial backoff, doubles up to 30s                                 |
@@ -82,7 +84,9 @@ Helpers: `SolrClientFactory`, `SolrVersionDetector`, `RetryUtil`,
 
 ## Ordering: when `max.in.flight.requests > 1` is safe
 
-This connector defaults to `max.in.flight.requests=8` for throughput. Kafka
+This connector defaults to `max.in.flight.requests=1`, which is always safe.
+Raising it is the single biggest throughput lever, but only with the guard
+below — `Validator` rejects `> 1` without it. Kafka
 guarantees order *within a partition*, so as long as a given document's
 writes all land on the same partition (the Debezium default — row PK is
 the Kafka key) they arrive at the connector in the right order.
@@ -94,23 +98,31 @@ write lands after a newer one and you lose the latest state.
 
 You have three ways to make `max.in.flight.requests > 1` correct:
 
-1. **Enable external versioning (recommended).** Tell Debezium to expose
-   the Kafka offset as a header and point the connector at it:
+1. **Stamp the Kafka offset as a document version (recommended, and the
+   only option the validator accepts).** Add a numeric field plus a
+   `DocBasedVersionConstraints` update processor with
+   `ignoreOldUpdates=true` on it to the collection's solrconfig, then:
 
    ```properties
-   external.version.header=__kafka_offset
+   kafka.offset.version.field=_offset_ver
    ```
 
-   Solr's `_version_` semantics will reject any write whose version is
-   older than the doc's current version. Reordering becomes safe — the
-   stale batch is just dropped.
+   Solr then silently drops any write whose stamped offset is older than
+   the one already indexed, so reordering is safe.
+
+   Note this is *not* the same as `external.version.header`, which writes
+   Solr's reserved `_version_` field. `_version_` is **optimistic
+   concurrency** ("apply only if the doc is still at exactly this
+   version"), not "ignore older" — feeding it Kafka offsets makes almost
+   every update fail with a 409 conflict. Use it only when the header
+   really does carry the document's current `_version_`.
 
 2. **Use atomic updates for partial mutations.** When only some fields
    change, set `write.method=ATOMIC_UPDATE`. Solr merges field-by-field
    so reordering is benign at the field level.
 
-3. **Drop to `max.in.flight.requests=1`.** Slower — every batch is acked
-   before the next is sent, so *cross-batch* reordering disappears.
+3. **Stay at `max.in.flight.requests=1` (the default).** Every batch is
+   acked before the next is sent, so *cross-batch* reordering disappears.
    Matches the kafka-connect-elasticsearch default.
 
 Independently of the setting, upserts and deletes buffered in the same
@@ -140,8 +152,9 @@ id.strategy=KAFKA_KEY
 # is configured with default delete handling).
 behavior.on.null.values=delete
 
-# Order safety: pair external versioning with high in-flight concurrency.
-external.version.header=__kafka_offset
+# Order safety: pair the offset version guard with high in-flight concurrency.
+# Requires _offset_ver + a DocBasedVersionConstraints processor in the configset.
+kafka.offset.version.field=_offset_ver
 max.in.flight.requests=8
 
 # DLQ
@@ -332,7 +345,7 @@ Connector-side knobs that move the most throughput, in priority order:
 
 | Setting | Default | When to raise |
 |---|---|---|
-| `max.in.flight.requests` | 8 | Solr CPU has headroom and your network RTT > 5 ms |
+| `max.in.flight.requests` | 1 | Solr CPU has headroom and RTT > 5 ms — **and** `kafka.offset.version.field` is configured |
 | `batch.size` | 2000 | Documents are small (< 1 KB) and Solr indexing is the bottleneck |
 | `bulk.size.bytes` | 5 MiB | Documents are large; prevents oversized requests stalling a slow shard |
 | `commit.within.ms` | 1000 | Raise for write-heavy loads where searcher freshness can lag |

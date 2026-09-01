@@ -171,6 +171,7 @@ public final class SolrRecordConverter {
         Integer cached = leafCountCache.get(schema);
         if (cached != null) return cached;
         int n = computeLeafCount(schema);
+        if (leafCountCache.size() >= PLAN_CACHE_MAX_SCHEMAS) leafCountCache.clear();
         leafCountCache.put(schema, n);
         return n;
     }
@@ -243,9 +244,24 @@ public final class SolrRecordConverter {
      * The common nested case is served by eagerly built plans captured in the STRUCT
      * encoder closure — that path bypasses this map entirely.
      */
+    // Both caches are keyed by Schema IDENTITY, which assumes the converter hands back the same
+    // instance forever. JsonConverter's schema cache is an LRU — once it evicts, every record
+    // arrives with a fresh Schema object and these maps grow without bound for the life of the
+    // task. Drop-all on overflow: the steady state is a handful of schemas, so this only ever
+    // fires when identity churn has already made the cache worthless.
+    private static final int PLAN_CACHE_MAX_SCHEMAS = 256;
+
+    private void evictIfSaturated() {
+        if (planCache.size() >= PLAN_CACHE_MAX_SCHEMAS) {
+            planCache.clear();
+            leafCountCache.clear();
+        }
+    }
+
     FieldEncoder[] getOrBuildPlan(Schema schema, String prefix) {
         Map<String, FieldEncoder[]> byPrefix = planCache.get(schema);
         if (byPrefix == null) {
+            evictIfSaturated();
             byPrefix = new HashMap<>(2);
             planCache.put(schema, byPrefix);
         }
@@ -343,7 +359,7 @@ public final class SolrRecordConverter {
                 return (conv, doc, src) -> {
                     Object v = src.get(field);
                     if (v instanceof byte[]) conv.addField(doc, name, BASE64.encodeToString((byte[]) v));
-                    else if (v instanceof ByteBuffer) conv.addField(doc, name, BASE64.encodeToString(((ByteBuffer) v).array()));
+                    else if (v instanceof ByteBuffer) conv.addField(doc, name, encodeBase64((ByteBuffer) v));
                 };
             case STRING:
             case INT8: case INT16: case INT32: case INT64:
@@ -394,7 +410,7 @@ public final class SolrRecordConverter {
         } else if (value instanceof byte[]) {
             addField(doc, name, BASE64.encodeToString((byte[]) value));
         } else if (value instanceof ByteBuffer) {
-            addField(doc, name, BASE64.encodeToString(((ByteBuffer) value).array()));
+            addField(doc, name, encodeBase64((ByteBuffer) value));
         } else if (value instanceof java.util.Date) {
             addField(doc, name, ((java.util.Date) value).toInstant().toString());
         } else {
@@ -495,11 +511,23 @@ public final class SolrRecordConverter {
             case BYTES:
                 return (conv, doc, name, value) -> {
                     if (value instanceof byte[]) conv.addField(doc, name, BASE64.encodeToString((byte[]) value));
-                    else if (value instanceof ByteBuffer) conv.addField(doc, name, BASE64.encodeToString(((ByteBuffer) value).array()));
+                    else if (value instanceof ByteBuffer) conv.addField(doc, name, encodeBase64((ByteBuffer) value));
                 };
             default:
                 return (conv, doc, name, value) -> conv.addField(doc, name, value);
         }
+    }
+
+    /**
+     * Base64 of a ByteBuffer's REMAINING bytes. {@code array()} would return the whole backing
+     * array — wrong for a sliced/positioned buffer — and throws outright on a read-only or direct
+     * buffer, which is what an Avro/Protobuf converter can hand us for a BYTES field.
+     */
+    private static String encodeBase64(ByteBuffer buffer) {
+        ByteBuffer readable = buffer.duplicate();
+        byte[] bytes = new byte[readable.remaining()];
+        readable.get(bytes);
+        return BASE64.encodeToString(bytes);
     }
 
     @FunctionalInterface

@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import java.util.HashMap;
 import java.util.Map;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -127,6 +128,39 @@ class SolrWriterTest {
         Struct v = new Struct(s).put("x", "y");
         SinkRecord r = new SinkRecord("users", 0, null, null, s, v, 1L);
         assertThatCode(() -> w.write(r)).doesNotThrowAnyException();
+        w.close();
+    }
+
+    @Test
+    void sourceFieldCapturesTheNestedShapeOfASchemadRecord() throws Exception {
+        // Jackson discovers no bean properties on a Connect Struct, so serializing one directly
+        // throws — which would make EVERY schema'd record malformed the moment source.field is on.
+        Map<String, String> o = new HashMap<>();
+        o.put(SolrSinkConfig.SOURCE_FIELD_CONFIG, "_src");
+        o.put(SolrSinkConfig.SOURCE_EXCLUDE_FIELDS_CONFIG, "custom_field_");
+        SolrClient client = mock(SolrClient.class);
+        SolrWriter w = new SolrWriter(client, cfg(o));
+
+        Schema address = SchemaBuilder.struct().field("city", Schema.STRING_SCHEMA).build();
+        Schema user = SchemaBuilder.struct()
+                .field("first_name", Schema.STRING_SCHEMA)
+                .field("address", address)
+                .field("custom_field_5_value_2", Schema.STRING_SCHEMA)
+                .build();
+        Struct value = new Struct(user)
+                .put("first_name", "Ada")
+                .put("address", new Struct(address).put("city", "London"))
+                .put("custom_field_5_value_2", "index-only");
+
+        org.mockito.ArgumentCaptor<UpdateRequest> req =
+                org.mockito.ArgumentCaptor.forClass(UpdateRequest.class);
+        w.write(rec("u1", value, user));
+        w.flush();
+        verify(client, atLeastOnce()).request(req.capture(), anyString());
+
+        Object src = req.getValue().getDocuments().get(0).getFieldValue("_src");
+        // Nested struct survives as nested JSON; the index-only prefix is stripped.
+        assertThat(src).isEqualTo("{\"first_name\":\"Ada\",\"address\":{\"city\":\"London\"}}");
         w.close();
     }
 
