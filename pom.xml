@@ -6,7 +6,7 @@
 
     <groupId>com.una</groupId>
     <artifactId>kafka-connect-solr</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.0.0</version>
     <packaging>jar</packaging>
     <name>kafka-connect-solr</name>
     <description>
@@ -24,9 +24,19 @@
     </licenses>
 
     <properties>
+        <!-- MUST STAY 11. This plugin does NOT run in our own image; it is loaded by the Kafka
+             Connect worker, and debezium/connect:2.3 ships Java 11.0.20 (verified by running
+             `java -version` inside that image). Compiling to 17 emits major-version-61 bytecode the
+             worker cannot load: the plugin dies with UnsupportedClassVersionError at startup and the
+             solr-sink never registers, which looks exactly like the "connector class not found"
+             failure in README_Solr_GoLive.md Step 4. Raising this requires changing the Connect
+             image FIRST, not the pom. (kstreams is different and IS on 17: it runs in our own
+             eclipse-temurin:17-jre image.)
+             `release` rather than source/target is still the right directive: it pins the API set to
+             11, so building on a newer JDK now REJECTS a Java 12+ call instead of silently accepting
+             it and failing at runtime. -->
         <java.version>11</java.version>
-        <maven.compiler.source>${java.version}</maven.compiler.source>
-        <maven.compiler.target>${java.version}</maven.compiler.target>
+        <maven.compiler.release>${java.version}</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <kafka.version>3.5.1</kafka.version>
@@ -176,8 +186,7 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.11.0</version>
                 <configuration>
-                    <source>${java.version}</source>
-                    <target>${java.version}</target>
+                    <release>${java.version}</release>
                 </configuration>
             </plugin>
             <plugin>

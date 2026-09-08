@@ -26,6 +26,18 @@
     </autoSoftCommit>
   </updateHandler>
 
+  <!-- T5.1 / §40b — present and NOT default, mirroring the authoritative configset. See the fuller
+       rationale there: the chain cannot be made default while documents carry no `_offset_ver`,
+       so enabling the guard is two deliberate switches rather than one. -->
+  <updateRequestProcessorChain name="offset-versioning">
+    <processor class="solr.DocBasedVersionConstraintsProcessorFactory">
+      <str name="versionField">_offset_ver</str>
+      <bool name="ignoreOldUpdates">true</bool>
+    </processor>
+    <processor class="solr.LogUpdateProcessorFactory"/>
+    <processor class="solr.RunUpdateProcessorFactory"/>
+  </updateRequestProcessorChain>
+
   <requestHandler name="/update" class="solr.UpdateRequestHandler"/>
   <requestHandler name="/select" class="solr.SearchHandler">
     <lst name="defaults">

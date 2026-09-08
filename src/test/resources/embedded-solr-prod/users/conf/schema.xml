@@ -10,6 +10,22 @@
   <field name="_src" type="string" indexed="false" stored="true" docValues="false" multiValued="false"/>
   <field name="_version_" type="plong" indexed="true" stored="true"/>
   <field name="_mapping_version" type="string" indexed="true" stored="false" docValues="false" multiValued="false"/>
+  <!-- Declared EXPLICITLY, not left to the catch-all dynamicField (§54b). A dynamic field is
+       only resolvable once some document in that collection actually carries it, so on a
+       FRESH collection — exactly the blue/green case, a brand-new -v2 before any tombstone
+       arrives — a query on `_deleted` fails with "undefined field _deleted" (HTTP 400) and
+       takes every count gate, health probe and preflight check down with it. Declaring the
+       field makes the liveness filter (scripts/live_count.LIVE_FILTER) valid from the
+       moment the collection exists, empty or not.
+       Marks a tombstone once versioned tombstones (_offset_ver, §40b) are enabled; today no
+       document carries it, and the filter is a correct no-op. -->
+  <field name="_deleted" type="boolean" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <!-- T5.1 / §40b. Mirrors the authoritative configset; the four-way agreement check compares
+       DECLARATIONS, so a field added to one copy and not this one blocks the release. STORED
+       because DocBasedVersionConstraintsProcessorFactory reads the stored value back to compare.
+       Inert until the connector stamps it (SOLR_OFFSET_VERSION_FIELD) AND the offset-versioning
+       chain is made default. -->
+  <field name="_offset_ver" type="plong" indexed="true" stored="true" docValues="true" multiValued="false"/>
   <!-- docValues REQUIRED: the search-settings filter runs exists(location) (`location:*`), and a
        Point-based spatial field can only answer FieldExistsQuery from doc values — without it
        Solr 500s on the dashboard relationship widget and the "searching" user filter. -->
@@ -39,6 +55,14 @@
   <field name="last_admin_message_date" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
   <field name="last_admin_match_date" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
   <field name="promises_latest_actionable_at" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+
+  <!-- Length-guard fields. Present in the production configset; this mirror was missing all three,
+       so the connector's own tests exercised a schema where they fell to the multiValued catch-all
+       instead of text_ci. A passing connector test therefore did not demonstrate production
+       behaviour for them, in either direction. Found by the T3.2 four-way configset checksum. -->
+  <field name="comments.comment" type="text_ci" indexed="true" stored="false" multiValued="true"/>
+  <field name="packages.description" type="text_ci" indexed="true" stored="false" multiValued="true"/>
+  <field name="promises.name" type="text_ci" indexed="true" stored="false" multiValued="true"/>
 
   <field name="_text" type="text_ci" indexed="true" stored="false" multiValued="true"/>
   <copyField source="email" dest="_text"/>
