@@ -19,6 +19,11 @@ public final class ExternalResourceManager {
     private final SolrClient client;
     private final SolrSinkConfig config;
     private final Set<String> known = ConcurrentHashMap.newKeySet();
+    // Whether the endpoint answers the Collections API. A plain `solr.url` may name a SolrCloud
+    // NODE (e.g. SOLR_ZK_HOST left empty): there a collection is not a core of the same name —
+    // cores are `<collection>_shard1_replica_n1` — so the CoreAdmin probe reported every existing
+    // collection as missing and killed every task on its first write. Asked once, lazily.
+    private volatile Boolean collectionsApi;
 
     public ExternalResourceManager(SolrClient client, SolrSinkConfig config) {
         this.client = client;
@@ -57,9 +62,36 @@ public final class ExternalResourceManager {
         known.add(collection);
     }
 
+    /**
+     * True when collection semantics apply: always for a ZooKeeper-configured client, and for a
+     * plain URL when that endpoint answers the Collections API (a SolrCloud node). Only a reply
+     * that says Solr is NOT in SolrCloud mode is remembered as standalone — any other failure
+     * (auth, timeout) is not cached, so a transient error cannot pin the wrong semantics.
+     */
+    private boolean speaksCollectionsApi() {
+        if (config.isCloud()) {
+            return true;
+        }
+        Boolean cached = collectionsApi;
+        if (cached != null) {
+            return cached;
+        }
+        try {
+            CollectionAdminRequest.listCollections(client);
+            collectionsApi = Boolean.TRUE;
+            return true;
+        } catch (Exception e) {
+            String message = String.valueOf(e.getMessage());
+            if (message.contains("SolrCloud")) {
+                collectionsApi = Boolean.FALSE;
+            }
+            return false;
+        }
+    }
+
     private boolean probe(String collection) {
         try {
-            if (config.isCloud()) {
+            if (speaksCollectionsApi()) {
                 List<String> collections = CollectionAdminRequest.listCollections(client);
                 return collections != null && collections.contains(collection);
             }
@@ -77,7 +109,7 @@ public final class ExternalResourceManager {
                 collection, config.autoCreateShards(), config.autoCreateReplicationFactor(),
                 config.autoCreateConfigset());
         try {
-            if (config.isCloud()) {
+            if (speaksCollectionsApi()) {
                 CollectionAdminRequest.Create create = CollectionAdminRequest.createCollection(
                         collection,
                         config.autoCreateConfigset(),

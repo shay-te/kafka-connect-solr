@@ -118,6 +118,51 @@ class ExternalResourceManagerTest {
                 .isInstanceOf(ConnectException.class);
     }
 
+    @Test
+    void aPlainUrlToASolrCloudNodeFindsAnExistingCollection() throws Exception {
+        // 2026-09-10 rehearsal: SOLR_ZK_HOST was empty, so the sink got `solr.url` for a SolrCloud
+        // node. The CoreAdmin probe looked for a core literally named after the collection (cores
+        // are `<collection>_shard1_replica_n1`), reported it missing, and killed every task.
+        SolrClient client = mock(SolrClient.class);
+        when(client.request(any(SolrRequest.class), any())).thenReturn(listingWith("users"));
+
+        Map<String, String> o = new HashMap<>();
+        o.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "REQUIRED");
+        ExternalResourceManager mgr = new ExternalResourceManager(client, cfg(o));
+        mgr.ensure("users");
+        assertThat(mgr.isKnown("users")).isTrue();
+    }
+
+    @Test
+    void aStandaloneSolrIsRecognisedOnceAndNotAskedForCollectionsAgain() throws Exception {
+        SolrClient client = mock(SolrClient.class);
+        when(client.request(any(SolrRequest.class), any())).thenThrow(
+                new org.apache.solr.client.solrj.impl.BaseHttpSolrClient.RemoteSolrException(
+                        "http://x", 400, "Solr instance is not running in SolrCloud mode.", null));
+
+        Map<String, String> o = new HashMap<>();
+        o.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "REQUIRED");
+        ExternalResourceManager mgr = new ExternalResourceManager(client, cfg(o));
+        assertThatThrownBy(() -> mgr.ensure("a")).isInstanceOf(ConnectException.class);
+        assertThatThrownBy(() -> mgr.ensure("b")).isInstanceOf(ConnectException.class);
+        // "a": Collections attempt + CoreAdmin probe; "b": CoreAdmin probe only (standalone cached).
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(3)).request(any(SolrRequest.class), any());
+    }
+
+    @Test
+    void aTransientErrorIsNotCachedAsStandalone() throws Exception {
+        SolrClient client = mock(SolrClient.class);
+        when(client.request(any(SolrRequest.class), any())).thenThrow(new java.io.IOException("network blip"));
+
+        Map<String, String> o = new HashMap<>();
+        o.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "REQUIRED");
+        ExternalResourceManager mgr = new ExternalResourceManager(client, cfg(o));
+        assertThatThrownBy(() -> mgr.ensure("a")).isInstanceOf(ConnectException.class);
+        assertThatThrownBy(() -> mgr.ensure("b")).isInstanceOf(ConnectException.class);
+        // Each ensure asks the Collections API again (nothing cached) and then CoreAdmin: 2 + 2.
+        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(4)).request(any(SolrRequest.class), any());
+    }
+
     private NamedList<Object> emptyCollections() {
         NamedList<Object> r = new NamedList<>();
         r.add("collections", java.util.Collections.emptyList());
