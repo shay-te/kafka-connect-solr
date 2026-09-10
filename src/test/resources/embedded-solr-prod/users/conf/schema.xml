@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- Mirror of the PRODUCTION schema (objective_love_web/docker/solr/aggregated_user_data).
+     See that file for the full rationale (stored-only _src, numeric typing, text_ci CI search,
+     value_<N>-typed custom fields, docValues sort keys). -->
+<schema name="aggregated-user-data" version="1.6">
+  <uniqueKey>id</uniqueKey>
+
+  <!-- id needs docValues: it is the sort tiebreak on every custom-field sort. -->
+  <field name="id" type="string" indexed="true" stored="true" required="true" multiValued="false" docValues="true"/>
+  <field name="_src" type="string" indexed="false" stored="true" docValues="false" multiValued="false"/>
+  <field name="_version_" type="plong" indexed="true" stored="true"/>
+  <field name="_mapping_version" type="string" indexed="true" stored="false" docValues="false" multiValued="false"/>
+  <!-- Declared EXPLICITLY, not left to the catch-all dynamicField (§54b). A dynamic field is
+       only resolvable once some document in that collection actually carries it, so on a
+       FRESH collection — exactly the blue/green case, a brand-new -v2 before any tombstone
+       arrives — a query on `_deleted` fails with "undefined field _deleted" (HTTP 400) and
+       takes every count gate, health probe and preflight check down with it. Declaring the
+       field makes the liveness filter (scripts/live_count.LIVE_FILTER) valid from the
+       moment the collection exists, empty or not.
+       Marks a tombstone once versioned tombstones (_offset_ver, §40b) are enabled; today no
+       document carries it, and the filter is a correct no-op. -->
+  <field name="_deleted" type="boolean" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <!-- T5.1 / §40b. Mirrors the authoritative configset; the four-way agreement check compares
+       DECLARATIONS, so a field added to one copy and not this one blocks the release. STORED
+       because DocBasedVersionConstraintsProcessorFactory reads the stored value back to compare.
+       Inert until the connector stamps it (SOLR_OFFSET_VERSION_FIELD) AND the offset-versioning
+       chain is made default. -->
+  <field name="_offset_ver" type="plong" indexed="true" stored="true" docValues="true" multiValued="false"/>
+  <!-- docValues REQUIRED: the search-settings filter runs exists(location) (`location:*`), and a
+       Point-based spatial field can only answer FieldExistsQuery from doc values — without it
+       Solr 500s on the dashboard relationship widget and the "searching" user filter. -->
+  <field name="location" type="location" indexed="true" stored="false" docValues="true" multiValued="false"/>
+
+  <field name="height" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="completion" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="conversation_terminated_longest_seconds" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+
+  <field name="email" type="text_ci" indexed="true" stored="false" multiValued="false"/>
+  <field name="first_name" type="text_ci" indexed="true" stored="false" multiValued="false"/>
+  <field name="last_name" type="text_ci" indexed="true" stored="false" multiValued="false"/>
+  <field name="first_name_sort" type="string" indexed="false" stored="false" docValues="true" multiValued="false"/>
+  <field name="last_name_sort"  type="string" indexed="false" stored="false" docValues="true" multiValued="false"/>
+  <copyField source="first_name" dest="first_name_sort"/>
+  <copyField source="last_name"  dest="last_name_sort"/>
+
+  <!-- Scalar sort/range columns pulled OUT of the multiValued catch-all (mirrors prod schema;
+       see that file for the measurement rationale). -->
+  <field name="created_at" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="updated_at" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="birthday" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="conversation_id" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="package_start_date" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="package_end_date" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="package_hold_date" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="last_admin_message_date" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="last_admin_match_date" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="promises_latest_actionable_at" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
+
+  <!-- Length-guard fields. Present in the production configset; this mirror was missing all three,
+       so the connector's own tests exercised a schema where they fell to the multiValued catch-all
+       instead of text_ci. A passing connector test therefore did not demonstrate production
+       behaviour for them, in either direction. Found by the T3.2 four-way configset checksum. -->
+  <field name="comments.comment" type="text_ci" indexed="true" stored="false" multiValued="true"/>
+  <field name="packages.description" type="text_ci" indexed="true" stored="false" multiValued="true"/>
+  <field name="promises.name" type="text_ci" indexed="true" stored="false" multiValued="true"/>
+
+  <field name="_text" type="text_ci" indexed="true" stored="false" multiValued="true"/>
+  <copyField source="email" dest="_text"/>
+  <copyField source="first_name" dest="_text"/>
+  <copyField source="last_name" dest="_text"/>
+  <copyField source="*_value_2" dest="_text"/>
+  <copyField source="*_value_3" dest="_text"/>
+  <copyField source="*_value_4" dest="_text"/>
+  <copyField source="*_value_6" dest="_text"/>
+
+  <dynamicField name="*_sort_value" type="string" indexed="false" stored="false" docValues="true" multiValued="false"/>
+
+  <dynamicField name="*_value_2"  type="text_ci" indexed="true" stored="false" multiValued="true"/>
+  <dynamicField name="*_value_3"  type="text_ci" indexed="true" stored="false" multiValued="true"/>
+  <dynamicField name="*_value_4"  type="string"  indexed="true" stored="false" docValues="true" multiValued="true"/>
+  <dynamicField name="*_value_6"  type="string"  indexed="true" stored="false" docValues="true" multiValued="true"/>
+  <dynamicField name="*_value_8"  type="string"  indexed="true" stored="false" docValues="true" multiValued="true"/>
+  <dynamicField name="*_value_9"  type="string"  indexed="true" stored="false" docValues="true" multiValued="true"/>
+  <dynamicField name="*_value_1"  type="string"  indexed="true" stored="false" multiValued="true"/>
+  <dynamicField name="*_value_5"  type="string"  indexed="true" stored="false" multiValued="true"/>
+  <dynamicField name="*_value_10" type="string"  indexed="true" stored="false" multiValued="true"/>
+
+  <dynamicField name="*_score" type="plong" indexed="true" stored="false" docValues="true" multiValued="true"/>
+  <dynamicField name="*_days_in_stage" type="plong" indexed="true" stored="false" docValues="true" multiValued="true"/>
+  <dynamicField name="promises_summary.counts.*" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+
+  <dynamicField name="*" type="string" indexed="true" stored="false" docValues="true" multiValued="true"/>
+
+  <fieldType name="string" class="solr.StrField" sortMissingLast="true"/>
+  <fieldType name="boolean" class="solr.BoolField" sortMissingLast="true"/>
+  <fieldType name="plong" class="solr.LongPointField"/>
+  <fieldType name="location" class="solr.LatLonPointSpatialField"/>
+  <fieldType name="text_ci" class="solr.TextField" positionIncrementGap="100" multiValued="true">
+    <analyzer>
+      <tokenizer class="solr.KeywordTokenizerFactory"/>
+      <filter class="solr.LowerCaseFilterFactory"/>
+      <!-- KeywordTokenizer makes the WHOLE value one term, and Lucene REJECTS a term over 32766
+           BYTES — which fails the ENTIRE user document, so one user with a long TEXT_AREA custom
+           field would vanish from search (it is copyField'd into _text too). ES tokenised these
+           fields, so only Solr needs this guard. Drop the over-long token instead: the document
+           still indexes and the user stays findable by every other field. 8000 CHARS is the cap
+           because LengthFilter counts chars and UTF-8 can be 4 bytes each (8000*4 < 32766).
+           (TruncateTokenFilterFactory is not usable here — its prefixLength is a byte, max 127.) -->
+      <filter class="solr.LengthFilterFactory" min="0" max="8000"/>
+    </analyzer>
+  </fieldType>
+</schema>

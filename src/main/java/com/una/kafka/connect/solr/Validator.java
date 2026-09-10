@@ -1,0 +1,194 @@
+package com.una.kafka.connect.solr;
+
+import org.apache.kafka.common.config.Config;
+import org.apache.kafka.common.config.ConfigValue;
+
+import java.io.File;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+public final class Validator {
+
+    private Validator() {
+    }
+
+    public static Config validate(Config base, Map<String, String> props) {
+        Map<String, ConfigValue> byName = new HashMap<>();
+        for (ConfigValue cv : base.configValues()) {
+            byName.put(cv.name(), cv);
+        }
+
+        requireConnection(byName, props);
+        requireExclusiveConnection(byName, props);
+        requireSslFiles(byName, props);
+        requireKerberos(byName, props);
+        sanityCheckThroughput(byName, props);
+        requireOrderingSafety(byName, props);
+        sanityCheckRegexCollection(byName, props);
+
+        return base;
+    }
+
+    private static void requireConnection(Map<String, ConfigValue> v, Map<String, String> p) {
+        boolean hasUrl = !nullOrEmpty(p.get(SolrSinkConfig.SOLR_URL_CONFIG));
+        boolean hasZk = !nullOrEmpty(p.get(SolrSinkConfig.SOLR_ZK_HOST_CONFIG));
+        if (!hasUrl && !hasZk) {
+            err(v, SolrSinkConfig.SOLR_URL_CONFIG,
+                    "Set either '" + SolrSinkConfig.SOLR_URL_CONFIG
+                            + "' (e.g. http://solr:8983/solr) or '"
+                            + SolrSinkConfig.SOLR_ZK_HOST_CONFIG
+                            + "' (e.g. zk1:2181,zk2:2181/solr).");
+            err(v, SolrSinkConfig.SOLR_ZK_HOST_CONFIG,
+                    "Set either '" + SolrSinkConfig.SOLR_URL_CONFIG
+                            + "' or '" + SolrSinkConfig.SOLR_ZK_HOST_CONFIG + "'.");
+        }
+    }
+
+    private static void requireExclusiveConnection(Map<String, ConfigValue> v, Map<String, String> p) {
+        boolean hasUrl = !nullOrEmpty(p.get(SolrSinkConfig.SOLR_URL_CONFIG));
+        boolean hasZk = !nullOrEmpty(p.get(SolrSinkConfig.SOLR_ZK_HOST_CONFIG));
+        if (hasUrl && hasZk) {
+            err(v, SolrSinkConfig.SOLR_URL_CONFIG,
+                    "Set either solr.url OR solr.zk.host, not both. Drop one.");
+        }
+    }
+
+    private static void requireSslFiles(Map<String, ConfigValue> v, Map<String, String> p) {
+        String protocol = p.getOrDefault(SolrSinkConfig.SECURITY_PROTOCOL_CONFIG, "PLAINTEXT");
+        if (!"SSL".equalsIgnoreCase(protocol)) {
+            return;
+        }
+        checkFile(v, SolrSinkConfig.SSL_KEYSTORE_LOCATION_CONFIG, p.get(SolrSinkConfig.SSL_KEYSTORE_LOCATION_CONFIG), false);
+        checkFile(v, SolrSinkConfig.SSL_TRUSTSTORE_LOCATION_CONFIG, p.get(SolrSinkConfig.SSL_TRUSTSTORE_LOCATION_CONFIG), false);
+    }
+
+    private static void requireKerberos(Map<String, ConfigValue> v, Map<String, String> p) {
+        String principal = p.get(SolrSinkConfig.KERBEROS_PRINCIPAL_CONFIG);
+        String keytab = p.get(SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG);
+        boolean hasPrincipal = !nullOrEmpty(principal);
+        boolean hasKeytab = !nullOrEmpty(keytab);
+        if (hasPrincipal != hasKeytab) {
+            err(v, SolrSinkConfig.KERBEROS_PRINCIPAL_CONFIG,
+                    "Kerberos requires BOTH 'kerberos.user.principal' and 'kerberos.keytab.path'.");
+            err(v, SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG,
+                    "Kerberos requires BOTH 'kerberos.user.principal' and 'kerberos.keytab.path'.");
+            return;
+        }
+        if (hasKeytab) {
+            checkFile(v, SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG, keytab, true);
+        }
+    }
+
+    private static void sanityCheckThroughput(Map<String, ConfigValue> v, Map<String, String> p) {
+        Integer batch = asInt(p.get(SolrSinkConfig.BATCH_SIZE_CONFIG));
+        Integer maxBuf = asInt(p.get(SolrSinkConfig.MAX_BUFFERED_RECORDS_CONFIG));
+        if (batch != null && maxBuf != null && maxBuf < batch) {
+            err(v, SolrSinkConfig.MAX_BUFFERED_RECORDS_CONFIG,
+                    "max.buffered.records (" + maxBuf + ") must be >= batch.size (" + batch + ").");
+        }
+        if (batch != null && batch < 1) {
+            err(v, SolrSinkConfig.BATCH_SIZE_CONFIG, "batch.size must be >= 1.");
+        }
+        Integer inFlight = asInt(p.get(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG));
+        if (inFlight != null && inFlight < 1) {
+            err(v, SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG,
+                    "max.in.flight.requests must be >= 1.");
+        }
+        Long flushTimeout = asLong(p.get(SolrSinkConfig.FLUSH_TIMEOUT_MS_CONFIG));
+        if (flushTimeout != null && flushTimeout < 1) {
+            err(v, SolrSinkConfig.FLUSH_TIMEOUT_MS_CONFIG,
+                    "flush.timeout.ms must be >= 1 (got " + flushTimeout + "). "
+                            + "0 or negative would make every flush throw immediately.");
+        }
+        Long linger = asLong(p.get(SolrSinkConfig.LINGER_MS_CONFIG));
+        if (linger != null && linger < 0) {
+            err(v, SolrSinkConfig.LINGER_MS_CONFIG, "linger.ms must be >= 0.");
+        }
+        Integer maxRetries = asInt(p.get(SolrSinkConfig.MAX_RETRIES_CONFIG));
+        if (maxRetries != null && maxRetries < 0) {
+            err(v, SolrSinkConfig.MAX_RETRIES_CONFIG, "max.retries must be >= 0.");
+        }
+    }
+
+    private static void requireOrderingSafety(Map<String, ConfigValue> v, Map<String, String> p) {
+        // Fall back to the ConfigDef default (8) when the key is absent: an omitted
+        // max.in.flight.requests is still >1 at runtime, so skipping the check on `null` would
+        // let the DEFAULT — the config most people ship — through unguarded.
+        Integer inFlight = asInt(p.get(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG));
+        if (inFlight == null) {
+            inFlight = (Integer) SolrSinkConfig.config()
+                    .configKeys().get(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG).defaultValue;
+        }
+        if (inFlight == null || inFlight <= 1) {
+            return;
+        }
+        if (nullOrEmpty(p.get(SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG))) {
+            err(v, SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG,
+                    "max.in.flight.requests > 1 without '" + SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG
+                            + "' silently loses ordering: concurrent batches can land out of order, so an "
+                            + "older update can overwrite a newer one. Set '"
+                            + SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG
+                            + "' (with a DocBasedVersionConstraints processor on that field) "
+                            + "or use max.in.flight.requests=1.");
+        }
+    }
+
+    private static void sanityCheckRegexCollection(Map<String, ConfigValue> v, Map<String, String> p) {
+        String strategy = p.get(SolrSinkConfig.COLLECTION_NAMING_STRATEGY_CONFIG);
+        if (!"TOPIC_REGEX".equalsIgnoreCase(strategy)) {
+            return;
+        }
+        String coll = p.get(SolrSinkConfig.SOLR_COLLECTION_CONFIG);
+        if (coll == null || !coll.contains("=>")) {
+            err(v, SolrSinkConfig.SOLR_COLLECTION_CONFIG,
+                    "collection.naming.strategy=TOPIC_REGEX requires '" + SolrSinkConfig.SOLR_COLLECTION_CONFIG
+                            + "' in 'pattern=>replacement' form, e.g. 'logs-.*=>logs'.");
+        }
+    }
+
+    private static void checkFile(Map<String, ConfigValue> v, String key, String path, boolean required) {
+        if (nullOrEmpty(path)) {
+            if (required) {
+                err(v, key, "Required file path is empty.");
+            }
+            return;
+        }
+        if (!new File(path).exists()) {
+            err(v, key, "File not found on disk: " + path);
+        }
+    }
+
+    private static void err(Map<String, ConfigValue> v, String name, String message) {
+        ConfigValue cv = v.get(name);
+        if (cv == null) {
+            return;
+        }
+        List<String> errors = cv.errorMessages();
+        if (!errors.contains(message)) {
+            cv.addErrorMessage(message);
+        }
+    }
+
+    private static boolean nullOrEmpty(String s) {
+        return s == null || s.trim().isEmpty();
+    }
+
+    private static Integer asInt(String s) {
+        if (s == null) return null;
+        try {
+            return Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static Long asLong(String s) {
+        if (s == null) return null;
+        try {
+            return Long.parseLong(s);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+}
