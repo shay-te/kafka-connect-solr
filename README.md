@@ -51,7 +51,7 @@ Helpers: `SolrClientFactory`, `RetryUtil`.
 | `behavior.on.null.values`    | `ignore`    | `ignore` / `delete` / `fail`                                       |
 | `behavior.on.malformed.documents` | `fail` | `ignore` / `warn` / `fail`                                         |
 | `batch.size`                 | `2000`      | Records per bulk update                                            |
-| `linger.ms`                  | `50`        | Time to wait while filling a batch                                 |
+| `linger.ms`                  | `50`        | Time to wait while filling a batch — also the most a partial batch waits once traffic stops (the task asks Connect to wake it after `linger.ms`; before 2026-09-10 the tail waited for the 60 s offset flush) |
 | `flush.timeout.ms`           | `30000`     | Max wait when flushing                                             |
 | `max.in.flight.requests`     | `1`         | Concurrent Solr requests per task; >1 needs `kafka.offset.version.field` |
 | `max.buffered.records`       | `20000`     | Back-pressure threshold                                            |

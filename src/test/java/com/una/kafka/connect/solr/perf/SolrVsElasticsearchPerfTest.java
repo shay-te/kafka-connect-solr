@@ -29,6 +29,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -410,19 +411,38 @@ class SolrVsElasticsearchPerfTest {
             props.put(SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG, offsetVersionField);
         }
 
+        // Under the guard a write whose version EQUALS the stored one is rejected — silently, HTTP
+        // 200, `ignoreOldUpdates=true`. Best-of-N repeats and the UPDATE phase re-send the same ids,
+        // so with the records' own offsets every repeat after the first timed REJECTIONS, not
+        // writes. Advance past every earlier call, as a real topic's offsets do. Not timed.
+        List<SinkRecord> timed = offsetVersionField == null ? records : advanceOffsets(records);
+
         SolrSinkTask task = new SolrSinkTask();
         task.start(props);
 
         long t0 = System.nanoTime();
         // Mimic Kafka Connect feeding records in chunks.
         int chunk = 500;
-        for (int i = 0; i < records.size(); i += chunk) {
-            task.put(records.subList(i, Math.min(records.size(), i + chunk)));
+        for (int i = 0; i < timed.size(); i += chunk) {
+            task.put(timed.subList(i, Math.min(timed.size(), i + chunk)));
         }
         task.preCommit(new HashMap<>());
         long ns = System.nanoTime() - t0;
         task.stop();
         return TimeUnit.NANOSECONDS.toMillis(ns);
+    }
+
+    private static final AtomicLong OFFSET_BASE = new AtomicLong();
+
+    private static List<SinkRecord> advanceOffsets(List<SinkRecord> records) {
+        long base = OFFSET_BASE.getAndAdd(records.size());
+        List<SinkRecord> advanced = new ArrayList<>(records.size());
+        for (int i = 0; i < records.size(); i++) {
+            SinkRecord r = records.get(i);
+            advanced.add(new SinkRecord(r.topic(), r.kafkaPartition(), r.keySchema(), r.key(),
+                    r.valueSchema(), r.value(), base + i));
+        }
+        return advanced;
     }
 
     private long timeElasticsearch(List<SinkRecord> records) throws Exception {

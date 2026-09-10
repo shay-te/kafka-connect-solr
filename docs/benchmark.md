@@ -564,6 +564,21 @@ plateau (2.4-2.9x), with 4 never winning there either.
 not use 4 on a 5-core host. Beyond the plateau there is nothing to gain and memory/GC headroom to
 lose. Single levels are NOT separable on a contended host — read the grouping, not the ranking.
 
+> ⚠️ **Found 2026-09-10: every `-Dperf.guard=true` figure before that date timed REJECTED writes.**
+> `timeSolr` sent the records' own offsets on every call and never cleared the core. Best-of-3
+> therefore timed one INSERT (a version-lookup miss, which trap 3 above already shows understates
+> the guard) and then two re-writes at EQUAL versions, which `ignoreOldUpdates=true` rejects
+> silently with HTTP 200. The head-to-head UPDATE phase re-sent the seed's offsets, so under the
+> guard it timed nothing but rejections. The table above is therefore a sweep of inserts plus
+> rejections, not of accepted guarded updates. Treat "optimum ≈ core count" as directional.
+> Fixed: `timeSolr` now advances offsets past every earlier call (`advanceOffsets`), as a real
+> topic does. Guard-off runs were never affected.
+>
+> The deployable number comes from the target cluster, not from here:
+> `ob-love-admin-backend/scripts/solr_inflight_calibrate.py`. It runs CREATE/UPDATE/DELETE
+> through the real connector with naturally increasing offsets, and times every app read on the
+> live alias while the writes run.
+
 ### Verify this yourself — do not take the tables above on trust
 
 **Are the `inflight=4` numbers wrong?** No. They are real measurements of a real configuration —

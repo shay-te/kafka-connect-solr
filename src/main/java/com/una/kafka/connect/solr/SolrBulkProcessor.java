@@ -216,6 +216,30 @@ public final class SolrBulkProcessor implements AutoCloseable {
         throwIfReaped();
     }
 
+    /** True while any collection buffer holds records not yet handed to a worker. */
+    public boolean hasBuffered() {
+        for (OpBuffer buf : buffers.values()) {
+            if (buf.size > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Enforce {@code linger.ms} when no record arrives. {@link #checkGlobalThresholds()} runs only
+     * on the write path, so once traffic stopped a partial batch sat buffered until the next
+     * offset flush ({@code offset.flush.interval.ms}, 60 s by default) — measured on the
+     * rehearsal stack: the last 145 of 20,000 records became searchable 55 s after the rest.
+     * {@link SolrSinkTask} calls this from an idle {@code put()}; task thread only, like every
+     * other buffer access.
+     */
+    public void flushIfLingerElapsed() {
+        if (hasBuffered() && System.nanoTime() - lastFlushNanos >= lingerNanos) {
+            flushAsync();
+        }
+    }
+
     private void throwIfReaped() {
         Throwable reaped = reapedFailure.getAndSet(null);
         if (reaped != null) {

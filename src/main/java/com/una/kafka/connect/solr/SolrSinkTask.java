@@ -21,6 +21,7 @@ public class SolrSinkTask extends SinkTask {
     private OffsetTracker offsetTracker;
     private boolean sync;
     private boolean streaming;
+    private long lingerMs;
 
     @Override
     public String version() {
@@ -37,6 +38,7 @@ public class SolrSinkTask extends SinkTask {
         this.sync = config.flushSynchronously() || streaming;
         this.offsetTracker = sync ? new SyncOffsetTracker() : new AsyncOffsetTracker();
         this.writer = createWriter(client, config, offsetTracker);
+        this.lingerMs = config.lingerMs();
     }
 
     protected SolrClient createClient(SolrSinkConfig config) {
@@ -50,6 +52,8 @@ public class SolrSinkTask extends SinkTask {
     @Override
     public void put(Collection<SinkRecord> records) {
         if (records == null || records.isEmpty()) {
+            writer.flushIfLingerElapsed();
+            wakeAfterLingerIfBuffered();
             return;
         }
         for (SinkRecord r : records) {
@@ -63,6 +67,19 @@ public class SolrSinkTask extends SinkTask {
             } catch (Exception e) {
                 throw new RetriableException("Failed to enqueue record " + r.kafkaOffset(), e);
             }
+        }
+        wakeAfterLingerIfBuffered();
+    }
+
+    /**
+     * An idle consumer poll blocks until the next offset commit (offset.flush.interval.ms, 60 s
+     * by default), and linger.ms is only checked when a record is written — so a partial batch
+     * left at the end of a burst sat unsent for up to a minute. Asking Connect to wake the task
+     * after linger.ms delivers an empty put() in time, which flushes it on this thread.
+     */
+    private void wakeAfterLingerIfBuffered() {
+        if (context != null && writer.hasBuffered()) {
+            context.timeout(lingerMs);
         }
     }
 

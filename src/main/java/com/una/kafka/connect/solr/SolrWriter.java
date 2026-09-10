@@ -355,6 +355,15 @@ public final class SolrWriter implements AutoCloseable {
         forEachProcessor(SolrBulkProcessor::flushAsync);
     }
 
+    /** See {@link SolrBulkProcessor#flushIfLingerElapsed()}. */
+    public void flushIfLingerElapsed() {
+        forEachProcessor(SolrBulkProcessor::flushIfLingerElapsed);
+    }
+
+    public boolean hasBuffered() {
+        return sumLong(p -> p.hasBuffered() ? 1L : 0L) > 0;
+    }
+
     public void partitionRevoked(TopicPartition tp) {
         if (!partitionFanout) {
             return;

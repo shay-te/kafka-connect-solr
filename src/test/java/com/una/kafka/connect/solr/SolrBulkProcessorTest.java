@@ -17,6 +17,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -54,6 +56,44 @@ class SolrBulkProcessorTest {
 
         verify(client, atLeastOnce()).request(any(UpdateRequest.class), anyString());
         assertThat(bulk.recordsWritten()).isGreaterThanOrEqualTo(2);
+        bulk.close();
+    }
+
+    @Test
+    void anIdlePartialBatchIsSentOnceLingerElapsesWithoutANewRecord() throws Exception {
+        // The rehearsal defect: the tail of a burst (fewer than batch.size records) waited for the
+        // next offset flush — 55 s — because linger was only checked when another record arrived.
+        Map<String, String> overrides = new HashMap<>();
+        overrides.put(SolrSinkConfig.BATCH_SIZE_CONFIG, "100");
+        overrides.put(SolrSinkConfig.LINGER_MS_CONFIG, "200");
+        SolrClient client = mock(SolrClient.class);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(overrides));
+
+        bulk.upsert("c", doc("1"), null);
+        bulk.flushIfLingerElapsed();
+        assertThat(bulk.hasBuffered()).as("linger has not elapsed yet").isTrue();
+        verify(client, never()).request(any(UpdateRequest.class), anyString());
+
+        Thread.sleep(250);
+        bulk.flushIfLingerElapsed();
+
+        assertThat(bulk.hasBuffered()).isFalse();
+        verify(client, timeout(2000)).request(any(UpdateRequest.class), anyString());
+        bulk.close();
+    }
+
+    @Test
+    void anIdleCheckWithNothingBufferedSendsNothing() throws Exception {
+        Map<String, String> overrides = new HashMap<>();
+        overrides.put(SolrSinkConfig.LINGER_MS_CONFIG, "1");
+        SolrClient client = mock(SolrClient.class);
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(overrides));
+
+        Thread.sleep(5);
+        bulk.flushIfLingerElapsed();
+
+        assertThat(bulk.hasBuffered()).isFalse();
+        verify(client, never()).request(any(UpdateRequest.class), anyString());
         bulk.close();
     }
 
