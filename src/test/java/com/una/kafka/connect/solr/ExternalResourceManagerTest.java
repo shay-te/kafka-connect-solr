@@ -104,8 +104,8 @@ class ExternalResourceManagerTest {
     }
 
     @Test
-    void probeFailureFallsThroughToCreateOrThrow() throws Exception {
-        // Simulate a probe error (network failure during listCollections).
+    void aTransientProbeErrorUnderZooKeeperIsRetriedNotReportedMissing() throws Exception {
+        // Read as "missing", a network blip at task start failed the task for good.
         SolrClient client = mock(SolrClient.class);
         when(client.request(any(SolrRequest.class), any()))
                 .thenThrow(new java.io.IOException("network blip"));
@@ -115,52 +115,28 @@ class ExternalResourceManagerTest {
         o.put(SolrSinkConfig.SOLR_ZK_HOST_CONFIG, "zk:2181");
         ExternalResourceManager mgr = new ExternalResourceManager(client, cfg(o));
         assertThatThrownBy(() -> mgr.ensure("anywhere"))
-                .isInstanceOf(ConnectException.class);
+                .isInstanceOf(org.apache.kafka.connect.errors.RetriableException.class);
+        assertThat(mgr.isKnown("anywhere")).isFalse();
     }
 
     @Test
-    void aPlainUrlToASolrCloudNodeFindsAnExistingCollection() throws Exception {
-        // 2026-09-10 rehearsal: SOLR_ZK_HOST was empty, so the sink got `solr.url` for a SolrCloud
-        // node. The CoreAdmin probe looked for a core literally named after the collection (cores
-        // are `<collection>_shard1_replica_n1`), reported it missing, and killed every task.
-        SolrClient client = mock(SolrClient.class);
-        when(client.request(any(SolrRequest.class), any())).thenReturn(listingWith("users"));
-
-        Map<String, String> o = new HashMap<>();
-        o.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "REQUIRED");
-        ExternalResourceManager mgr = new ExternalResourceManager(client, cfg(o));
-        mgr.ensure("users");
-        assertThat(mgr.isKnown("users")).isTrue();
-    }
-
-    @Test
-    void aStandaloneSolrIsRecognisedOnceAndNotAskedForCollectionsAgain() throws Exception {
-        SolrClient client = mock(SolrClient.class);
-        when(client.request(any(SolrRequest.class), any())).thenThrow(
-                new org.apache.solr.client.solrj.impl.BaseHttpSolrClient.RemoteSolrException(
-                        "http://x", 400, "Solr instance is not running in SolrCloud mode.", null));
-
-        Map<String, String> o = new HashMap<>();
-        o.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "REQUIRED");
-        ExternalResourceManager mgr = new ExternalResourceManager(client, cfg(o));
-        assertThatThrownBy(() -> mgr.ensure("a")).isInstanceOf(ConnectException.class);
-        assertThatThrownBy(() -> mgr.ensure("b")).isInstanceOf(ConnectException.class);
-        // "a": Collections attempt + CoreAdmin probe; "b": CoreAdmin probe only (standalone cached).
-        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(3)).request(any(SolrRequest.class), any());
-    }
-
-    @Test
-    void aTransientErrorIsNotCachedAsStandalone() throws Exception {
-        SolrClient client = mock(SolrClient.class);
-        when(client.request(any(SolrRequest.class), any())).thenThrow(new java.io.IOException("network blip"));
-
-        Map<String, String> o = new HashMap<>();
-        o.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "REQUIRED");
-        ExternalResourceManager mgr = new ExternalResourceManager(client, cfg(o));
-        assertThatThrownBy(() -> mgr.ensure("a")).isInstanceOf(ConnectException.class);
-        assertThatThrownBy(() -> mgr.ensure("b")).isInstanceOf(ConnectException.class);
-        // Each ensure asks the Collections API again (nothing cached) and then CoreAdmin: 2 + 2.
-        org.mockito.Mockito.verify(client, org.mockito.Mockito.times(4)).request(any(SolrRequest.class), any());
+    void anUnreachableSolrIsRetriableNeverMissing() throws Exception {
+        // A real client with nothing listening. Read as "missing", this killed the task (REQUIRED)
+        // or sent a CREATE for a collection that exists (AUTO).
+        int port;
+        try (java.net.ServerSocket socket = new java.net.ServerSocket(0)) {
+            port = socket.getLocalPort();
+        }
+        String url = "http://127.0.0.1:" + port + "/solr";
+        try (SolrClient client = new org.apache.solr.client.solrj.impl.Http2SolrClient.Builder(url).build()) {
+            Map<String, String> o = new HashMap<>();
+            o.put(SolrSinkConfig.SOLR_URL_CONFIG, url);
+            o.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "REQUIRED");
+            ExternalResourceManager mgr = new ExternalResourceManager(client, cfg(o));
+            assertThatThrownBy(() -> mgr.ensure("users"))
+                    .isInstanceOf(org.apache.kafka.connect.errors.RetriableException.class);
+            assertThat(mgr.isKnown("users")).isFalse();
+        }
     }
 
     private NamedList<Object> emptyCollections() {

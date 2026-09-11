@@ -52,7 +52,13 @@ public class SolrSinkTask extends SinkTask {
     @Override
     public void put(Collection<SinkRecord> records) {
         if (records == null || records.isEmpty()) {
-            writer.flushIfLingerElapsed();
+            try {
+                writer.flushIfLingerElapsed();
+            } catch (ConnectException ce) {
+                throw ce;
+            } catch (Exception e) {
+                throw new RetriableException("Idle linger flush failed", e);
+            }
             wakeAfterLingerIfBuffered();
             return;
         }

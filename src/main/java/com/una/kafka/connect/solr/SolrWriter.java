@@ -361,7 +361,13 @@ public final class SolrWriter implements AutoCloseable {
     }
 
     public boolean hasBuffered() {
-        return sumLong(p -> p.hasBuffered() ? 1L : 0L) > 0;
+        if (!partitionFanout) {
+            return sharedProcessor.hasBuffered();
+        }
+        for (SolrBulkProcessor processor : perPartition.values()) {
+            if (processor.hasBuffered()) return true;
+        }
+        return false;
     }
 
     public void partitionRevoked(TopicPartition tp) {

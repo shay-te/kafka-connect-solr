@@ -76,53 +76,6 @@ class SolrSinkTaskTest {
     }
 
     @Test
-    void anIdlePutRunsTheLingerCheck() {
-        // An empty put() is Connect's idle poll — the only chance to send a partial batch on time.
-        SolrWriter writer = mock(SolrWriter.class);
-        TestTask task = new TestTask(mock(SolrClient.class), writer);
-        task.start(baseProps());
-        task.put(Collections.emptyList());
-        verify(writer).flushIfLingerElapsed();
-        task.stop();
-    }
-
-    @Test
-    void aTaskHoldingBufferedRecordsAsksConnectToWakeItAfterLinger() {
-        // Without this an idle consumer poll blocks until the next offset commit (60 s by default).
-        SolrWriter writer = mock(SolrWriter.class);
-        when(writer.hasBuffered()).thenReturn(true);
-        SinkTaskContext context = mock(SinkTaskContext.class);
-        TestTask task = new TestTask(mock(SolrClient.class), writer);
-        task.initialize(context);
-        Map<String, String> props = baseProps();
-        props.put(SolrSinkConfig.LINGER_MS_CONFIG, "75");
-        task.start(props);
-
-        task.put(Collections.singletonList(
-                new SinkRecord("users", 0, Schema.STRING_SCHEMA, "a", null, "x", 1L)));
-
-        verify(context).timeout(75L);
-        task.stop();
-    }
-
-    @Test
-    void nothingBufferedMeansNoEarlyWakeUp() {
-        SolrWriter writer = mock(SolrWriter.class);
-        when(writer.hasBuffered()).thenReturn(false);
-        SinkTaskContext context = mock(SinkTaskContext.class);
-        TestTask task = new TestTask(mock(SolrClient.class), writer);
-        task.initialize(context);
-        task.start(baseProps());
-
-        task.put(Collections.singletonList(
-                new SinkRecord("users", 0, Schema.STRING_SCHEMA, "a", null, "x", 1L)));
-        task.put(Collections.emptyList());
-
-        verify(context, never()).timeout(anyLong());
-        task.stop();
-    }
-
-    @Test
     void retriableExceptionPropagates() {
         SolrWriter writer = mock(SolrWriter.class);
         doThrow(new RetriableException("transient")).when(writer).write(any());

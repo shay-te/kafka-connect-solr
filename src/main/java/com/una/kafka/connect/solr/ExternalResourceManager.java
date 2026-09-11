@@ -1,7 +1,9 @@
 package com.una.kafka.connect.solr;
 
 import org.apache.kafka.connect.errors.ConnectException;
+import org.apache.kafka.connect.errors.RetriableException;
 import org.apache.solr.client.solrj.SolrClient;
+import org.apache.solr.client.solrj.impl.BaseHttpSolrClient;
 import org.apache.solr.client.solrj.request.CollectionAdminRequest;
 import org.apache.solr.client.solrj.request.CoreAdminRequest;
 import org.apache.solr.client.solrj.response.CoreAdminResponse;
@@ -15,6 +17,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class ExternalResourceManager {
 
     private static final Logger log = LoggerFactory.getLogger(ExternalResourceManager.class);
+    /** Standalone Solr's answer to a Collections API call; the only reply cached as standalone. */
+    static final String STANDALONE_SIGNATURE = "not running in SolrCloud mode";
 
     private final SolrClient client;
     private final SolrSinkConfig config;
@@ -24,6 +28,8 @@ public final class ExternalResourceManager {
     // cores are `<collection>_shard1_replica_n1` — so the CoreAdmin probe reported every existing
     // collection as missing and killed every task on its first write. Asked once, lazily.
     private volatile Boolean collectionsApi;
+    // The listing that answered "is this SolrCloud?", reused by the probe right after it.
+    private List<String> freshListing;
 
     public ExternalResourceManager(SolrClient client, SolrSinkConfig config) {
         this.client = client;
@@ -64,9 +70,9 @@ public final class ExternalResourceManager {
 
     /**
      * True when collection semantics apply: always for a ZooKeeper-configured client, and for a
-     * plain URL when that endpoint answers the Collections API (a SolrCloud node). Only a reply
-     * that says Solr is NOT in SolrCloud mode is remembered as standalone — any other failure
-     * (auth, timeout) is not cached, so a transient error cannot pin the wrong semantics.
+     * plain URL when that endpoint answers the Collections API (a SolrCloud node). Only
+     * standalone's own reply is cached as "standalone"; any other failure goes to
+     * {@link #probeFailure}, never to the CoreAdmin probe (which answers "missing" on a cloud node).
      */
     private boolean speaksCollectionsApi() {
         if (config.isCloud()) {
@@ -77,30 +83,47 @@ public final class ExternalResourceManager {
             return cached;
         }
         try {
-            CollectionAdminRequest.listCollections(client);
+            freshListing = CollectionAdminRequest.listCollections(client);
             collectionsApi = Boolean.TRUE;
             return true;
         } catch (Exception e) {
-            String message = String.valueOf(e.getMessage());
-            if (message.contains("SolrCloud")) {
+            if (String.valueOf(e.getMessage()).contains(STANDALONE_SIGNATURE)) {
                 collectionsApi = Boolean.FALSE;
+                return false;
             }
-            return false;
+            throw probeFailure("tell whether Solr is SolrCloud", e);
         }
+    }
+
+    /**
+     * Transient (I/O, 429, 5xx) is retried; a refusal (401/403) fails the task and names the status.
+     * Read as "missing", a blip killed the task; read as retriable, a bad credential spun forever
+     * with the task RUNNING and nothing indexed.
+     */
+    private static ConnectException probeFailure(String what, Exception error) {
+        String reason = error instanceof BaseHttpSolrClient.RemoteSolrException
+                ? "HTTP " + ((BaseHttpSolrClient.RemoteSolrException) error).code() + ": " + error.getMessage()
+                : String.valueOf(error.getMessage());
+        String message = "Could not " + what + " (" + reason + ")";
+        return RetryUtil.isRetriable(error)
+                ? new RetriableException(message, error) : new ConnectException(message, error);
     }
 
     private boolean probe(String collection) {
         try {
             if (speaksCollectionsApi()) {
-                List<String> collections = CollectionAdminRequest.listCollections(client);
+                List<String> collections = freshListing != null
+                        ? freshListing : CollectionAdminRequest.listCollections(client);
+                freshListing = null;
                 return collections != null && collections.contains(collection);
             }
             CoreAdminResponse status = CoreAdminRequest.getStatus(collection, client);
             org.apache.solr.common.util.NamedList<Object> coreStatus = status.getCoreStatus(collection);
             return coreStatus != null && !coreStatus.asMap(0).isEmpty();
+        } catch (ConnectException e) {
+            throw e;                    // already classified by probeFailure
         } catch (Exception e) {
-            log.warn("Resource existence probe for '{}' failed: {}", collection, e.getMessage());
-            return false;
+            throw probeFailure("check whether '" + collection + "' exists", e);
         }
     }
 
@@ -108,8 +131,9 @@ public final class ExternalResourceManager {
         log.info("Auto-creating Solr collection '{}' (shards={}, rf={}, configset={})",
                 collection, config.autoCreateShards(), config.autoCreateReplicationFactor(),
                 config.autoCreateConfigset());
+        boolean cloud = speaksCollectionsApi();    // outside the try: retriable must stay retriable
         try {
-            if (speaksCollectionsApi()) {
+            if (cloud) {
                 CollectionAdminRequest.Create create = CollectionAdminRequest.createCollection(
                         collection,
                         config.autoCreateConfigset(),

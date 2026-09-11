@@ -149,6 +149,95 @@ class SolrBulkProcessorEmbeddedTest {
         }
     }
 
+    private void awaitFound(String q, long expected) throws Exception {
+        for (int i = 0; i < 100; i++) {
+            solr.commit(EmbeddedSolrSupport.CORE);
+            if (numFound(q) == expected) return;
+            Thread.sleep(50);
+        }
+        assertThat(numFound(q)).as(q).isEqualTo(expected);
+    }
+
+    @Test
+    void anIdlePartialBatchIsSentOnceLingerElapses() throws Exception {
+        // The tail of a burst (below batch.size) waited for the next offset flush, 60 s by default.
+        try (SolrBulkProcessor bulk = new SolrBulkProcessor(solr, config(
+                SolrSinkConfig.BATCH_SIZE_CONFIG, "100", SolrSinkConfig.LINGER_MS_CONFIG, "2000"))) {
+            OffsetState s = new OffsetState(new TopicPartition("users", 0), 1L);
+            bulk.upsert(EmbeddedSolrSupport.CORE, doc("tail", "t", 1), s);
+            bulk.flushIfLingerElapsed();
+            assertThat(bulk.hasBuffered()).as("linger has not elapsed yet").isTrue();
+
+            Thread.sleep(2100);
+            bulk.flushIfLingerElapsed();
+
+            assertThat(bulk.hasBuffered()).isFalse();
+            awaitFound("id:tail", 1);
+        }
+    }
+
+    @Test
+    void anIdleCheckWithNothingBufferedSendsNothing() throws Exception {
+        try (SolrBulkProcessor bulk = new SolrBulkProcessor(solr, config(
+                SolrSinkConfig.LINGER_MS_CONFIG, "1"))) {
+            Thread.sleep(5);
+            bulk.flushIfLingerElapsed();
+            assertThat(bulk.hasBuffered()).isFalse();
+            assertThat(bulk.batchCount()).isZero();
+        }
+    }
+
+    @Test
+    void aFailedBatchIsNotClearedByPutSideFlushesAndSurfacesAtPreCommit() throws Exception {
+        // Thrown from put(), a failure is cleared and Connect retries put without rewinding, so the
+        // next preCommit committed past the lost records. Only preCommit's flush may surface it.
+        try (SolrBulkProcessor bulk = new SolrBulkProcessor(solr, config(
+                SolrSinkConfig.BATCH_SIZE_CONFIG, "100", SolrSinkConfig.LINGER_MS_CONFIG, "1000",
+                SolrSinkConfig.MAX_RETRIES_CONFIG, "0"))) {
+            OffsetState lost = new OffsetState(new TopicPartition("users", 0), 1L);
+            bulk.upsert("no_such_core", doc("lost", "l", 1), lost);
+            Thread.sleep(1100);
+            bulk.flushIfLingerElapsed();                        // idle put(): sends, fails for real
+            for (int i = 0; i < 200 && bulk.recordsFailed() == 0; i++) Thread.sleep(5);
+            assertThat(bulk.recordsFailed()).isPositive();
+
+            // Inside the linger window: buffered, with the failure pending and not yet reaped.
+            bulk.upsert(EmbeddedSolrSupport.CORE, doc("next", "n", 2),
+                    new OffsetState(new TopicPartition("users", 0), 2L));
+            assertThat(bulk.hasBuffered()).isTrue();
+            Thread.sleep(1100);
+            bulk.flushIfLingerElapsed();                        // idle put() again: must NOT throw
+
+            assertThat(bulk.hasBuffered()).as("the tail is still sent").isFalse();
+            awaitFound("id:next", 1);
+            assertThat(lost.isAcked()).isFalse();
+            org.assertj.core.api.Assertions.assertThatThrownBy(bulk::flushSync)   // preCommit
+                    .isInstanceOf(org.apache.kafka.connect.errors.ConnectException.class);
+        }
+    }
+
+    @Test
+    void aBatchThatCouldNotBeSubmittedStaysBufferedAndIsSentLater() throws Exception {
+        // An interrupted permit acquire makes submit() throw; the batch used to be dropped there.
+        try (SolrBulkProcessor bulk = new SolrBulkProcessor(solr, config(
+                SolrSinkConfig.BATCH_SIZE_CONFIG, "1", SolrSinkConfig.LINGER_MS_CONFIG, "100000"))) {
+            OffsetState s = new OffsetState(new TopicPartition("users", 0), 1L);
+            Thread.currentThread().interrupt();
+            try {
+                org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                        bulk.upsert(EmbeddedSolrSupport.CORE, doc("kept", "k", 1), s))
+                        .isInstanceOf(org.apache.kafka.connect.errors.RetriableException.class);
+            } finally {
+                Thread.interrupted();
+            }
+            assertThat(bulk.hasBuffered()).as("the batch must survive the failed submit").isTrue();
+
+            bulk.flushSync();
+            awaitFound("id:kept", 1);
+            assertThat(s.isAcked()).isTrue();
+        }
+    }
+
     @Test
     void asyncFlushDoesNotLeakCompletedFutures() throws Exception {
         // Regression: in async mode only flushSync drained the inflight queue, so flushAsync()

@@ -191,29 +191,32 @@ public final class SolrBulkProcessor implements AutoCloseable {
         // At high throughput maxBufferedRecords trips long before lingerNanos, so checking
         // it first lets us short-circuit out without the nanoTime call.
         if (queueDepth.sum() >= maxBufferedRecords) {
-            flushAsync();
+            flushBuffers();
             return;
         }
         if (System.nanoTime() - lastFlushNanos >= lingerNanos) {
-            flushAsync();
+            flushBuffers();
         }
     }
 
+    /**
+     * The preCommit flush: sends every buffer, then surfaces a failed batch. Only preCommit may
+     * surface it — thrown from put(), Connect retries the same batch without rewinding and the
+     * failure is gone, so the next preCommit would commit past the lost records.
+     */
     public void flushAsync() {
-        // Drop finished futures BEFORE adding new ones. In async mode nothing else drains the
-        // inflight queue (only flushSync does), so without this it grows unbounded — a slow
-        // memory leak over a long-running task. Safe for sync mode too: flushSync fully drains
-        // the queue each call, so it's already empty here and this is a no-op.
+        flushBuffers();
+        throwIfReaped();
+    }
+
+    /** Sends every buffer. A failure is only recorded here, never thrown or cleared. */
+    private void flushBuffers() {
+        // Drop finished futures BEFORE adding new ones; in async mode nothing else drains them.
         reapCompletedFutures();
         for (Map.Entry<String, OpBuffer> e : buffers.entrySet()) {
             flushOne(e.getKey(), e.getValue());
         }
         lastFlushNanos = System.nanoTime();
-        // Surface a worker failure reaped above. In async mode NOTHING else inspects it — Kafka
-        // Connect calls the overridden preCommit (flushAsync), never flush()/flushSync() — so
-        // without this a task whose batches all fail stays RUNNING forever: offsets pinned at the
-        // earliest unacked record and the AsyncOffsetTracker's pending deques growing until OOM.
-        throwIfReaped();
     }
 
     /** True while any collection buffer holds records not yet handed to a worker. */
@@ -227,16 +230,13 @@ public final class SolrBulkProcessor implements AutoCloseable {
     }
 
     /**
-     * Enforce {@code linger.ms} when no record arrives. {@link #checkGlobalThresholds()} runs only
-     * on the write path, so once traffic stopped a partial batch sat buffered until the next
-     * offset flush ({@code offset.flush.interval.ms}, 60 s by default) — measured on the
-     * rehearsal stack: the last 145 of 20,000 records became searchable 55 s after the rest.
-     * {@link SolrSinkTask} calls this from an idle {@code put()}; task thread only, like every
-     * other buffer access.
+     * Enforce {@code linger.ms} when no record arrives (called from an idle {@code put()}); without
+     * it a partial batch waited for the next offset flush, 60 s by default. Never throws a failed
+     * batch — see {@link #flushAsync()}.
      */
     public void flushIfLingerElapsed() {
         if (hasBuffered() && System.nanoTime() - lastFlushNanos >= lingerNanos) {
-            flushAsync();
+            flushBuffers();
         }
     }
 
@@ -289,10 +289,20 @@ public final class SolrBulkProcessor implements AutoCloseable {
     private void flushOne(String collection, OpBuffer buf) {
         if (buf.size == 0) return;
         List<Run> runs = buf.runs;
+        int size = buf.size;
+        long bytes = buf.bytes;
         buf.runs = new ArrayList<>();
         buf.size = 0;
         buf.bytes = 0L;
-        submit(() -> sendRuns(collection, runs));
+        try {
+            submit(() -> sendRuns(collection, runs));
+        } catch (RuntimeException e) {
+            // Put them back: dropped here, preCommit would commit past records that were never sent.
+            buf.runs = runs;
+            buf.size = size;
+            buf.bytes = bytes;
+            throw e;
+        }
     }
 
     /**
@@ -318,9 +328,10 @@ public final class SolrBulkProcessor implements AutoCloseable {
         // flight — same at-least-once story as a mid-drain failure below.
         flushAsync();
         Future<?> f;
-        long deadline = System.currentTimeMillis() + flushTimeoutMs;
+        // Monotonic: a wall-clock jump (NTP) made a healthy flush time out and rewind.
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(flushTimeoutMs);
         while ((f = inflight.poll()) != null) {
-            long remaining = deadline - System.currentTimeMillis();
+            long remaining = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
             if (remaining <= 0) {
                 throw new RetriableException("Solr flush timed out");
             }

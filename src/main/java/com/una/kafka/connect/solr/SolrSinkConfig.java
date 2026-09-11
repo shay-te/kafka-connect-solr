@@ -273,7 +273,8 @@ public class SolrSinkConfig extends AbstractConfig {
                         + "Set 0 to disable byte-size capping.",
                 g, ++order, Width.SHORT, "Bulk size bytes");
         def.define(LINGER_MS_CONFIG, Type.LONG, 50L, Importance.MEDIUM,
-                "Max ms to wait while filling a batch before sending.",
+                "Max ms to wait while filling a batch before sending; also how long a partial "
+                        + "batch waits once records stop arriving (the task asks Connect to wake it).",
                 g, ++order, Width.SHORT, "Linger ms");
         def.define(FLUSH_TIMEOUT_MS_CONFIG, Type.LONG, 30_000L, Importance.MEDIUM,
                 "Max ms to wait when flushing in-flight requests.",
