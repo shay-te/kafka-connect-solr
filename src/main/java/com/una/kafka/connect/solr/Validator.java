@@ -123,15 +123,30 @@ public final class Validator {
         if (inFlight == null || inFlight <= 1) {
             return;
         }
-        if (nullOrEmpty(p.get(SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG))) {
+        boolean lanes = isTrue(p.get(SolrSinkConfig.ORDERING_LANES_ENABLED_CONFIG));
+        if (lanes && isTrue(p.get(SolrSinkConfig.STREAMING_ENABLED_CONFIG))) {
+            // The streaming client drains its queue from several runner threads of its own, so the
+            // order lanes hand it in is not the order Solr receives.
+            err(v, SolrSinkConfig.ORDERING_LANES_ENABLED_CONFIG,
+                    "'" + SolrSinkConfig.ORDERING_LANES_ENABLED_CONFIG + "' cannot keep per-document order with '"
+                            + SolrSinkConfig.STREAMING_ENABLED_CONFIG + "=true': the streaming client sends from "
+                            + "its own threads. Disable streaming, or use '"
+                            + SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG + "' instead of lanes.");
+        }
+        if (!lanes && nullOrEmpty(p.get(SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG))) {
             err(v, SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG,
                     "max.in.flight.requests > 1 without '" + SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG
                             + "' silently loses ordering: concurrent batches can land out of order, so an "
                             + "older update can overwrite a newer one. Set '"
                             + SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG
-                            + "' (with a DocBasedVersionConstraints processor on that field) "
-                            + "or use max.in.flight.requests=1.");
+                            + "' (with a DocBasedVersionConstraints processor on that field), set '"
+                            + SolrSinkConfig.ORDERING_LANES_ENABLED_CONFIG
+                            + "=true', or use max.in.flight.requests=1.");
         }
+    }
+
+    private static boolean isTrue(String s) {
+        return s != null && "true".equalsIgnoreCase(s.trim());
     }
 
     private static void sanityCheckRegexCollection(Map<String, ConfigValue> v, Map<String, String> p) {

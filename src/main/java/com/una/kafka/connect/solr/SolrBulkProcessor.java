@@ -44,8 +44,14 @@ import java.util.concurrent.atomic.LongAdder;
  * {@code max.in.flight.requests=1} (the default), because two successive flushes of the same
  * collection are separate tasks and would otherwise run concurrently. With
  * {@code max.in.flight.requests>1} you MUST also set {@code kafka.offset.version.field} and a
- * Solr DocBasedVersionConstraints processor on it — {@link Validator} rejects the combination
- * otherwise. Different collections may always flush concurrently.
+ * Solr DocBasedVersionConstraints processor on it, or {@code ordering.lanes.enabled=true} —
+ * {@link Validator} rejects the combination otherwise. Different collections may always flush
+ * concurrently.
+ *
+ * <p><b>Lanes</b> ({@link OrderingLanes}): each collection's buffer is split into one buffer per
+ * lane, an op goes to the lane of its document id, and a lane's flushes run one at a time on its own
+ * thread. The guarantee above then holds per document across flushes at any in-flight level. Off
+ * (the default), there is exactly one buffer per collection on the shared pool.
  */
 public final class SolrBulkProcessor implements AutoCloseable {
 
@@ -53,6 +59,9 @@ public final class SolrBulkProcessor implements AutoCloseable {
 
     private final SolrClient client;
     private final ExecutorService executor;
+    // Per-document lanes when ordering.lanes.enabled and max.in.flight.requests > 1. Null otherwise,
+    // and then every flush runs on `executor` exactly as it did before lanes existed.
+    private final OrderingLanes lanes;
     // Back-pressure: acquired before each submit, released by the worker when its
     // task completes. Caps concurrent in-flight requests at maxInFlight.
     private final Semaphore inflightSlots;
@@ -80,12 +89,13 @@ public final class SolrBulkProcessor implements AutoCloseable {
 
     private volatile long lastSuccessEpochMs = 0L;
 
-    // ONE ordered buffer per collection: upserts and deletes share it in insertion order.
-    private final Map<String, OpBuffer> buffers = new HashMap<>();
+    // ONE ordered buffer per collection lane (one lane unless lanes are on): upserts and deletes
+    // share it in insertion order.
+    private final Map<String, OpBuffer[]> buffers = new HashMap<>();
     private long lastFlushNanos = System.nanoTime();
 
     private String lastCollection;
-    private OpBuffer lastBuffer;
+    private OpBuffer[] lastBuffers;
 
     private final LongAdder recordsWritten = new LongAdder();
     private final LongAdder recordsFailed = new LongAdder();
@@ -115,7 +125,11 @@ public final class SolrBulkProcessor implements AutoCloseable {
         }
 
         int inFlight = Math.max(1, config.maxInFlight());
-        this.inflightSlots = new Semaphore(inFlight);
+        this.lanes = config.orderingLanesEnabled() && inFlight > 1 ? new OrderingLanes(inFlight) : null;
+        // With lanes a submitted flush can wait behind its own lane's running one while holding a
+        // permit; twice the lanes keeps one busy lane from starving the others. Concurrency is still
+        // capped at inFlight: each lane has one thread.
+        this.inflightSlots = new Semaphore(lanes == null ? inFlight : inFlight * 2);
         this.executor = new ThreadPoolExecutor(
                 inFlight, inFlight,
                 30L, TimeUnit.SECONDS,
@@ -136,7 +150,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
      * @param preComputedBytes a non-negative byte estimate or {@code -1} to compute on demand.
      */
     public void upsert(String collection, SolrInputDocument doc, long preComputedBytes, OffsetState offsetState) {
-        OpBuffer buf = bufferFor(collection);
+        OpBuffer buf = bufferFor(collection, doc.getFieldValue("id"));
         Run run = buf.runFor(false);
         run.docs.add(doc);
         run.states.add(offsetState);
@@ -149,7 +163,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
     }
 
     public void delete(String collection, String id, OffsetState offsetState) {
-        OpBuffer buf = bufferFor(collection);
+        OpBuffer buf = bufferFor(collection, id);
         Run run = buf.runFor(true);
         run.ids.add(id);
         run.states.add(offsetState);
@@ -158,18 +172,24 @@ public final class SolrBulkProcessor implements AutoCloseable {
         maybeFlush(collection, buf);
     }
 
-    private OpBuffer bufferFor(String collection) {
+    /** The buffer for this collection and, when lanes are on, the lane of document {@code id}. */
+    private OpBuffer bufferFor(String collection, Object id) {
+        OpBuffer[] laneBuffers;
         if (collection.equals(lastCollection)) {
-            return lastBuffer;
+            laneBuffers = lastBuffers;
+        } else {
+            laneBuffers = buffers.get(collection);
+            if (laneBuffers == null) {
+                laneBuffers = new OpBuffer[lanes == null ? 1 : lanes.count()];
+                for (int i = 0; i < laneBuffers.length; i++) {
+                    laneBuffers[i] = new OpBuffer(i);
+                }
+                buffers.put(collection, laneBuffers);
+            }
+            lastCollection = collection;
+            lastBuffers = laneBuffers;
         }
-        OpBuffer buf = buffers.get(collection);
-        if (buf == null) {
-            buf = new OpBuffer();
-            buffers.put(collection, buf);
-        }
-        lastCollection = collection;
-        lastBuffer = buf;
-        return buf;
+        return lanes == null ? laneBuffers[0] : laneBuffers[lanes.laneFor(id)];
     }
 
     private void maybeFlush(String collection, OpBuffer touched) {
@@ -213,17 +233,21 @@ public final class SolrBulkProcessor implements AutoCloseable {
     private void flushBuffers() {
         // Drop finished futures BEFORE adding new ones; in async mode nothing else drains them.
         reapCompletedFutures();
-        for (Map.Entry<String, OpBuffer> e : buffers.entrySet()) {
-            flushOne(e.getKey(), e.getValue());
+        for (Map.Entry<String, OpBuffer[]> e : buffers.entrySet()) {
+            for (OpBuffer buf : e.getValue()) {
+                flushOne(e.getKey(), buf);
+            }
         }
         lastFlushNanos = System.nanoTime();
     }
 
     /** True while any collection buffer holds records not yet handed to a worker. */
     public boolean hasBuffered() {
-        for (OpBuffer buf : buffers.values()) {
-            if (buf.size > 0) {
-                return true;
+        for (OpBuffer[] laneBuffers : buffers.values()) {
+            for (OpBuffer buf : laneBuffers) {
+                if (buf.size > 0) {
+                    return true;
+                }
             }
         }
         return false;
@@ -279,6 +303,11 @@ public final class SolrBulkProcessor implements AutoCloseable {
         return inflight.size();
     }
 
+    /** Test hook: lanes in use — 1 means the original shared-pool path. */
+    int laneCount() {
+        return lanes == null ? 1 : lanes.count();
+    }
+
     /**
      * Targeted flush of a single collection's ordered op buffer. The buffer's consecutive
      * same-type runs are sent SEQUENTIALLY by one flush task, preserving Kafka-offset apply
@@ -295,7 +324,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
         buf.size = 0;
         buf.bytes = 0L;
         try {
-            submit(() -> sendRuns(collection, runs));
+            submit(() -> sendRuns(collection, runs), buf.lane);
         } catch (RuntimeException e) {
             // Put them back: dropped here, preCommit would commit past records that were never sent.
             buf.runs = runs;
@@ -368,7 +397,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
                 "Solr rejected a document (non-retriable): " + cause.getMessage(), cause);
     }
 
-    private void submit(Runnable task) {
+    private void submit(Runnable task, int lane) {
         try {
             inflightSlots.acquire();
         } catch (InterruptedException ie) {
@@ -383,7 +412,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
             }
         };
         try {
-            inflight.add(executor.submit(wrapped));
+            inflight.add((lanes == null ? executor : lanes.executor(lane)).submit(wrapped));
         } catch (RuntimeException e) {
             // submit failed (e.g. RejectedExecutionException on shutdown) - the
             // wrapped runnable will never run, so release the permit ourselves.
@@ -641,6 +670,9 @@ public final class SolrBulkProcessor implements AutoCloseable {
             Thread.currentThread().interrupt();
             executor.shutdownNow();
         }
+        if (lanes != null) {
+            lanes.close();
+        }
     }
 
     private static ThreadFactory namedFactory(String prefix) {
@@ -659,11 +691,17 @@ public final class SolrBulkProcessor implements AutoCloseable {
      * contract) — plain fields, no atomics needed.
      */
     private static final class OpBuffer {
+        /** The lane this buffer flushes on; always 0 without lanes. */
+        final int lane;
         List<Run> runs = new ArrayList<>();
         /** Total buffered ops (upserts + deletes) — batch.size applies to this. */
         int size;
         /** Estimated buffered upsert bytes — bulk.size.bytes applies to this. */
         long bytes;
+
+        OpBuffer(int lane) {
+            this.lane = lane;
+        }
 
         /** The run to append the next op of the given type to, extending or starting one. */
         Run runFor(boolean delete) {

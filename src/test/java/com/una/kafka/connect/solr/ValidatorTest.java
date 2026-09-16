@@ -124,6 +124,36 @@ class ValidatorTest {
     }
 
     @Test
+    void inFlightAboveOneWithLanesAndNoVersionFieldAccepted() {
+        // Lanes keep every id on one serial lane, so the version guard is not required.
+        Map<String, String> p = valid();
+        p.put(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG, "4");
+        p.put(SolrSinkConfig.ORDERING_LANES_ENABLED_CONFIG, "true");
+        Config result = new SolrSinkConnector().validate(p);
+        assertThat(hasErrorFor(result, SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG)).isFalse();
+        assertThat(hasErrorFor(result, SolrSinkConfig.ORDERING_LANES_ENABLED_CONFIG)).isFalse();
+    }
+
+    @Test
+    void lanesSwitchedOffAboveOneStillNeedTheVersionField() {
+        Map<String, String> p = valid();
+        p.put(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG, "4");
+        p.put(SolrSinkConfig.ORDERING_LANES_ENABLED_CONFIG, "false");
+        Config result = new SolrSinkConnector().validate(p);
+        assertThat(hasErrorFor(result, SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG)).isTrue();
+    }
+
+    @Test
+    void lanesWithStreamingRejectedBecauseTheStreamingClientReorders() {
+        Map<String, String> p = valid();
+        p.put(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG, "4");
+        p.put(SolrSinkConfig.ORDERING_LANES_ENABLED_CONFIG, "true");
+        p.put(SolrSinkConfig.STREAMING_ENABLED_CONFIG, "true");
+        Config result = new SolrSinkConnector().validate(p);
+        assertThat(hasErrorFor(result, SolrSinkConfig.ORDERING_LANES_ENABLED_CONFIG)).isTrue();
+    }
+
+    @Test
     void regexCollectionRequiresArrow() {
         Map<String, String> p = valid();
         p.put(SolrSinkConfig.COLLECTION_NAMING_STRATEGY_CONFIG, "TOPIC_REGEX");

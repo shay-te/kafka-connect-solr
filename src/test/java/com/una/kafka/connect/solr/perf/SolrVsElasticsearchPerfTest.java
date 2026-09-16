@@ -60,6 +60,9 @@ class SolrVsElasticsearchPerfTest {
      * post-enablement shape and is directly comparable to `-Dperf.inflight=1`.
      */
     private static final boolean GUARD = Boolean.getBoolean("perf.guard");
+    // -Dperf.lanes=true: ordering.lanes.enabled on the Solr sink — per-document order at in-flight
+    // > 1 without the guard. Off by default, so every existing run measures what it always did.
+    private static final boolean LANES = Boolean.getBoolean("perf.lanes");
     private static final String OFFSET_VERSION_FIELD = "_offset_ver";
     private static final int QUERIES = Integer.getInteger("perf.queries", 200);
 
@@ -187,8 +190,8 @@ class SolrVsElasticsearchPerfTest {
         PhaseResult solrDelR = measure("solr-delete", 1, this::timeSolrDeleteAll);
         PhaseResult esDelR = measure("es-delete", 1, this::timeEsDeleteAll);
 
-        System.out.printf("%n[HEAD-TO-HEAD] records=%d batch=%d inFlight=%d guard=%s queries=%d%n",
-                RECORDS, BATCH_SIZE, IN_FLIGHT, GUARD ? "ON" : "off", QUERIES);
+        System.out.printf("%n[HEAD-TO-HEAD] records=%d batch=%d inFlight=%d guard=%s lanes=%s queries=%d%n",
+                RECORDS, BATCH_SIZE, IN_FLIGHT, GUARD ? "ON" : "off", LANES ? "ON" : "off", QUERIES);
         headToHead("SEED  ", solr.wallMs, es.wallMs);
         headToHead("UPDATE", solrUpd.wallMs, esUpd.wallMs);
         headToHead("FIND  ", solrFindR.wallMs, esFindR.wallMs);
@@ -351,11 +354,14 @@ class SolrVsElasticsearchPerfTest {
         } catch (RuntimeException alreadyDefined) {
             // present from a previous run — fine
         }
-        httpPost(solrBaseUrl + "/perf/config",
+        // Both @Tests share the container and each installs the guard, so the second install meets
+        // the first one's config (HTTP 400 "already exists"). Tolerated like the field above: the
+        // assertion below is what proves the guard is live, not these responses.
+        postUnlessAlreadyExists(solrBaseUrl + "/perf/config",
                 "{\"add-updateprocessor\":{\"name\":\"offsetver\","
                 + "\"class\":\"solr.DocBasedVersionConstraintsProcessorFactory\","
                 + "\"versionField\":\"" + OFFSET_VERSION_FIELD + "\",\"ignoreOldUpdates\":true}}");
-        httpPost(solrBaseUrl + "/perf/config",
+        postUnlessAlreadyExists(solrBaseUrl + "/perf/config",
                 // /update is IMPLICIT in _default — it has to be created before it can carry a
                 // default `processor`, hence create- rather than update-requesthandler.
                 "{\"create-requesthandler\":{\"name\":\"/update\","
@@ -374,6 +380,16 @@ class SolrVsElasticsearchPerfTest {
      * silently-wrong number this suite exists to avoid. Write id at a high version, then the same
      * id at a LOWER one: if the guard is live the older write is ignored.
      */
+    private static void postUnlessAlreadyExists(String url, String body) throws Exception {
+        try {
+            httpPost(url, body);
+        } catch (RuntimeException rejected) {
+            if (rejected.getMessage() == null || !rejected.getMessage().contains("already exists")) {
+                throw rejected;
+            }
+        }
+    }
+
     private static void assertGuardActuallyRejectsStaleWrites() throws Exception {
         httpPost(solrBaseUrl + "/perf/update?commit=true",
                 "[{\"id\":\"guard-probe\",\"name\":\"newer\",\"" + OFFSET_VERSION_FIELD + "\":100}]");
@@ -401,6 +417,7 @@ class SolrVsElasticsearchPerfTest {
         props.put(SolrSinkConfig.BATCH_SIZE_CONFIG, String.valueOf(BATCH_SIZE));
         props.put(SolrSinkConfig.LINGER_MS_CONFIG, "10");
         props.put(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG, String.valueOf(inFlight));
+        props.put(SolrSinkConfig.ORDERING_LANES_ENABLED_CONFIG, String.valueOf(LANES));
         props.put(SolrSinkConfig.MAX_BUFFERED_RECORDS_CONFIG, "50000");
         props.put(SolrSinkConfig.COMMIT_WITHIN_MS_CONFIG, "5000");
         props.put(SolrSinkConfig.FLUSH_TIMEOUT_MS_CONFIG, "120000");

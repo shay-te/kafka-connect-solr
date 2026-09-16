@@ -63,6 +63,7 @@ public class SolrSinkConfig extends AbstractConfig {
     public static final String FLUSH_TIMEOUT_MS_CONFIG = "flush.timeout.ms";
     public static final String FLUSH_SYNCHRONOUSLY_CONFIG = "flush.synchronously";
     public static final String MAX_IN_FLIGHT_REQUESTS_CONFIG = "max.in.flight.requests";
+    public static final String ORDERING_LANES_ENABLED_CONFIG = "ordering.lanes.enabled";
     public static final String MAX_BUFFERED_RECORDS_CONFIG = "max.buffered.records";
     public static final String MAX_RETRIES_CONFIG = "max.retries";
     public static final String RETRY_BACKOFF_MS_CONFIG = "retry.backoff.ms";
@@ -291,6 +292,16 @@ public class SolrSinkConfig extends AbstractConfig {
                         + "otherwise concurrent batches can land out of order and an older update "
                         + "can overwrite a newer one.",
                 g, ++order, Width.SHORT, "Max in-flight");
+        def.define(ORDERING_LANES_ENABLED_CONFIG, Type.BOOLEAN, false, Importance.MEDIUM,
+                "true = with " + MAX_IN_FLIGHT_REQUESTS_CONFIG + " > 1, route every document to one of "
+                        + MAX_IN_FLIGHT_REQUESTS_CONFIG + " lanes by its id. Each lane sends one request "
+                        + "at a time in Kafka-offset order and lanes run in parallel, so two writes for the "
+                        + "same id never overlap and per-document order holds WITHOUT "
+                        + KAFKA_OFFSET_VERSION_FIELD_CONFIG + ". false (default) = the shared pool, where "
+                        + "raising " + MAX_IN_FLIGHT_REQUESTS_CONFIG + " needs "
+                        + KAFKA_OFFSET_VERSION_FIELD_CONFIG + ". No effect at " + MAX_IN_FLIGHT_REQUESTS_CONFIG
+                        + "=1.",
+                g, ++order, Width.SHORT, "Ordering lanes");
         def.define(MAX_BUFFERED_RECORDS_CONFIG, Type.INT, 20_000, Importance.MEDIUM,
                 "Maximum buffered records across all in-flight batches.",
                 g, ++order, Width.SHORT, "Max buffered");
@@ -492,6 +503,7 @@ public class SolrSinkConfig extends AbstractConfig {
     public long flushTimeoutMs() { return getLong(FLUSH_TIMEOUT_MS_CONFIG); }
     public boolean flushSynchronously() { return getBoolean(FLUSH_SYNCHRONOUSLY_CONFIG); }
     public int maxInFlight() { return getInt(MAX_IN_FLIGHT_REQUESTS_CONFIG); }
+    public boolean orderingLanesEnabled() { return getBoolean(ORDERING_LANES_ENABLED_CONFIG); }
     public int maxBufferedRecords() { return getInt(MAX_BUFFERED_RECORDS_CONFIG); }
     public int maxRetries() { return getInt(MAX_RETRIES_CONFIG); }
     public long retryBackoffMs() { return getLong(RETRY_BACKOFF_MS_CONFIG); }

@@ -506,6 +506,114 @@ runs** — the standing "do not claim a win on dashboard recent-promises" holds.
 opposite directions by more than their gap, so per-query figures remain single-run noise; only the
 average is quotable.
 
+### 2026-09-13 — production config (`-Dperf.inflight=1`), after the installer work
+
+Host NOT clean: the rehearsal stack (Solr, Kafka, Connect, Postgres, …) was running throughout, the same
+contamination that inflated ES-side margins before. Treat write ratios as upper bounds.
+
+| CRUD, 20k records, guard off | Solr | ES | today | prod baseline | P14 warn below |
+|---|---|---|---|---|---|
+| SEED | 1,084 ms | 3,025 ms | 2.79x | 1.50x | 1.47x |
+| UPDATE | 794 ms | 1,735 ms | 2.19x | 1.64x | 1.68x |
+| FIND (200x) | 754 ms | 1,082 ms | 1.44x | 1.43x | 1.05x |
+| SORT (200x) | 836 ms | 1,271 ms | 1.52x | 1.57x | 0.77x |
+| DELETE | 53 ms | 459 ms | 8.66x | 7.68x | 4.97x |
+
+The write gains come mostly from ES getting SLOWER (SEED 3,025 ms vs 1,600–1,835 ms), i.e. contention;
+Solr's own figures are close to baseline. FIND/SORT, which contention does not skew, reproduce the
+baseline. Every ratio clears `perf_gate`'s 1.0x floor and its regression band.
+
+| Query suite, 50k docs, 300 iters | run 1 | run 2 |
+|---|---|---|
+| Q1 top-level filter + sort | 1.53x | 1.18x |
+| Q2 custom-field filter + sort | **0.95x** | 1.71x |
+| Q3 numeric range + sort | 1.40x | 1.52x |
+| Q4 dashboard recent promises | **0.85x** | 1.33x |
+| **Average** | **1.14x** | **1.42x** |
+
+Run 1's two sub-1.0 queries did not reproduce minutes later (Q2's Solr time 5.62 ms → 3.30 ms), which is
+host noise, not a regression — the connector's query path did not change. The average stays inside its
+historical 1.09–1.42x band, so the quotable claim is unchanged.
+
+Action items:
+1. **Do not refresh `helper_scripts/benchmark_result.json` from this run.** It feeds P14 and still holds
+   the 2026-09-07 in-flight=4 figures; replace them with in-flight=1 figures measured on a CLEAN host, so
+   the gate compares against the deployed shape rather than against contention.
+2. **Per-query figures need repeats before any decision** — one run produced two false "Solr slower"
+   results. Run the query suite at least twice and quote the average only.
+3. Items 2–4 of the action list above (guard cost, clean-host re-baseline, free-text coverage) are unchanged.
+
+### 2026-09-13 — CLEAN host re-run, production config (`-Dperf.inflight=1`)
+
+The rehearsal stack was stopped first, so nothing else competed for the host.
+
+| CRUD, 20k records, guard off | Solr | ES | clean | contended (same day) | P14 warn below |
+|---|---|---|---|---|---|
+| SEED | 696 ms | 1,306 ms | **1.88x** | 2.79x | 1.47x |
+| UPDATE | 715 ms | 1,194 ms | **1.67x** | 2.19x | 1.68x |
+| FIND (200x) | 540 ms | 861 ms | **1.59x** | 1.44x | 1.05x |
+| SORT (200x) | 690 ms | 1,204 ms | **1.74x** | 1.52x | 0.77x |
+| DELETE | 39 ms | 426 ms | **10.92x** | 8.66x | 4.97x |
+
+Confirms the contamination note above: the contended write margins were ES slowing down (SEED ES 3,025 ms
+contended vs 1,306 ms clean), while reads improved on the clean host. **Quote the clean column.**
+
+Action items (supersede the list above):
+1. **Done:** `helper_scripts/benchmark_result.json` (P14's input) now holds these clean in-flight=1 figures;
+   the 2026-09-07 in-flight=4 file is kept as `benchmark_result.inflight4-2026-09-07.json`.
+2. **Done — see "P14 baseline re-derived" below.** (Was: `perf_gate.RECORDED_RATIOS` dated from
+   2026-08-23 at in-flight 4, and UPDATE at the production in-flight sat under its 0.70 band.)
+3. Guard cost and free-text coverage remain open, as above.
+
+### 2026-09-13 — P14 baseline re-derived (production in-flight 1, five clean runs)
+
+`perf_gate.RECORDED_RATIOS` is now the per-operation **median** of five clean-host runs of
+`SolrVsElasticsearchPerfTest#solrIsFasterThanElasticsearch` at `-Dperf.inflight=1`, guard off (rehearsal
+stack stopped, fresh containers each run, best-of-3 per operation):
+
+| run | SEED | UPDATE | FIND | SORT | DELETE |
+|---|---|---|---|---|---|
+| morning clean | 1.88x | 1.67x | 1.59x | 1.74x | 10.92x |
+| 16:13 | 1.82x | 1.82x | 1.69x | 1.39x | 18.81x |
+| 16:24 | 1.38x | 1.68x | 1.23x | 1.26x | 17.33x |
+| 16:33 | 1.64x | 1.61x | 1.30x | 1.58x | 11.62x |
+| 16:54 | 1.75x | 1.79x | 1.50x | 1.66x | 10.84x |
+| **median = baseline** | **1.75x** | **1.68x** | **1.50x** | **1.58x** | **11.62x** |
+
+Excluded: the 16:09 run, where Solr's own per-batch call time was ~4x every other run's (43–58 ms vs
+12–14 ms, best-of-3 — no retries, no failures) and SEED read 0.44x; the connector did identical work, the
+Solr server answered slower. With `REGRESSION_TOLERANCE = 0.70` none of the five runs warns
+(`test_perf_gate.test_none_of_the_five_baseline_runs_warns`); the 1.0x floor is unchanged.
+
+### 2026-09-13 — free-text "search anything" measured (Q5), and p95/p99 for every query
+
+Closes action items 4 (free-text unmeasured) and 5 (averages only) above. `SolrVsElasticsearchQueryPerfTest`
+now has Q5: production's `fq=_text:*term*` (leading wildcard over the `text_ci` catch-all; no NGram) against
+an ES reconstruction of the replaced query (case-insensitive `wildcard` per source field, nested for the
+custom value — the original ES body is not in the repo). Caching is OFF on both sides (`{!cache=false}`; a
+scoring `should` on ES), so it times a newly typed search, not a filterCache hit. The test asserts both engines
+match the same number of users first. 50k users, each with a unique email term; 300 iterations after 50 warmup;
+clean host (rehearsal stack stopped), two runs (`helper_scripts/perf_query_free_text.sh`). ms, Solr / ES:
+
+| query | run 1 mean | run 1 p99 | run 2 mean | run 2 p99 |
+|---|---|---|---|---|
+| Q1 top-level filter + sort | 3.34 / 4.63 (1.39x) | 5.79 / 8.71 (1.51x) | 3.53 / 5.97 (1.69x) | 7.07 / 21.58 (3.05x) |
+| Q2 custom-field filter + sort | 2.94 / 3.81 (1.29x) | 5.90 / 5.53 (**0.94x**) | 3.81 / 5.66 (1.49x) | 10.40 / 12.66 (1.22x) |
+| Q3 numeric range + sort | 2.56 / 3.48 (1.36x) | 5.45 / 5.52 (1.01x) | 2.89 / 4.16 (1.44x) | 5.90 / 9.04 (1.53x) |
+| Q4 dashboard recent promises | 2.41 / 3.06 (1.27x) | 3.11 / 6.80 (2.18x) | 3.06 / 3.61 (1.18x) | 6.21 / 10.89 (1.75x) |
+| **Q5 free-text common `an` (17,855 hits)** | 2.79 / 4.88 (**1.75x**) | 5.33 / 9.56 (**1.80x**) | 3.65 / 6.40 (**1.75x**) | 10.17 / 13.46 (**1.32x**) |
+| **Q5 free-text rare, one user's email fragment (1 hit)** | 3.15 / 6.56 (**2.08x**) | 6.60 / 15.33 (**2.32x**) | 4.07 / 7.58 (**1.86x**) | 12.36 / 13.96 (**1.13x**) |
+| Q1-Q4 average (mean) | 2.81 / 3.74 (1.33x) | | 3.32 / 4.85 (1.46x) | |
+
+- **Free-text search is not the regression it was feared to be at this scale**: Solr is ahead on mean and p99
+  in both runs, for a term matching a third of users and for a term matching one. The leading wildcard's cost
+  grows with the number of distinct terms, and this index holds ~50k; a production index with far more users
+  will be slower on both engines, and the ratio at that size is unmeasured.
+- The only sub-1.0x figure is Q2's p99 in run 1 (0.94x), which reversed in run 2 (1.22x): tail noise, not a
+  pattern. Host load average was 17-23 during the runs, so absolute p99s are inflated; compare within a run.
+- NGram (`SOLR_TEXT_SEARCH_NGRAM`) was not measured: it needs a schema change the production configset does
+  not have, and the wildcard path it would replace already beats ES here.
+
 ### Action items
 
 1. **Correct the quotable claim.** As deployed today: Solr is ~1.5x on bulk insert, ~1.6x on

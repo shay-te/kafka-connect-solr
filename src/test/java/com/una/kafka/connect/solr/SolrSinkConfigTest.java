@@ -24,6 +24,8 @@ class SolrSinkConfigTest {
         // 1, not a throughput-first default: >1 reorders concurrent batches unless
         // kafka.offset.version.field is configured (Validator enforces the pair).
         assertThat(cfg.maxInFlight()).isEqualTo(1);
+        // Off by default: lanes are an opt-in, and off means the original shared pool.
+        assertThat(cfg.orderingLanesEnabled()).isFalse();
         assertThat(cfg.behaviorOnNullValues()).isEqualTo(SolrSinkConfig.BehaviorOnNullValues.IGNORE);
         assertThat(cfg.behaviorOnMalformed()).isEqualTo(SolrSinkConfig.BehaviorOnMalformed.FAIL);
         assertThat(cfg.writeMethod()).isEqualTo(SolrSinkConfig.WriteMethod.INDEX);

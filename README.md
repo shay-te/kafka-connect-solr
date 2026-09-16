@@ -53,7 +53,8 @@ Helpers: `SolrClientFactory`, `RetryUtil`.
 | `batch.size`                 | `2000`      | Records per bulk update                                            |
 | `linger.ms`                  | `50`        | Time to wait while filling a batch; also how long a partial batch waits once records stop arriving (the task asks Connect to wake it), measured from the last flush |
 | `flush.timeout.ms`           | `30000`     | Max wait when flushing                                             |
-| `max.in.flight.requests`     | `1`         | Concurrent Solr requests per task; >1 needs `kafka.offset.version.field` |
+| `max.in.flight.requests`     | `1`         | Concurrent Solr requests per task; >1 needs `kafka.offset.version.field` or `ordering.lanes.enabled` |
+| `ordering.lanes.enabled`     | `false`     | With in-flight >1: route each document to a lane by id, one request at a time per lane, so per-document order holds without the version guard. `false` = shared pool |
 | `max.buffered.records`       | `20000`     | Back-pressure threshold                                            |
 | `max.retries`                | `5`         | Max attempts on retryable failures                                 |
 | `retry.backoff.ms`           | `200`       | Initial backoff, doubles up to 30s                                 |
@@ -96,10 +97,25 @@ that each contain a write for the same key can be acknowledged by Solr in
 either order under concurrent in-flight requests. Worst case, an older
 write lands after a newer one and you lose the latest state.
 
-You have three ways to make `max.in.flight.requests > 1` correct:
+You have four ways to make `max.in.flight.requests > 1` correct (the
+validator accepts the first two):
 
-1. **Stamp the Kafka offset as a document version (recommended, and the
-   only option the validator accepts).** Add a numeric field plus a
+0. **Ordering lanes — no Solr-side change.**
+
+   ```properties
+   max.in.flight.requests=4
+   ordering.lanes.enabled=true
+   ```
+
+   Each document goes to one of `max.in.flight.requests` lanes by a hash of
+   its id; a lane sends one request at a time in Kafka-offset order, and
+   lanes run in parallel. Two writes for the same id never overlap, so no
+   version check is needed and nothing has to be re-streamed. The speedup is
+   smaller when a few ids dominate the traffic (they share a lane). Not
+   combinable with `streaming.enabled=true` (its client reorders). Turn it off
+   with `ordering.lanes.enabled=false` — the original shared pool.
+
+1. **Stamp the Kafka offset as a document version.** Add a numeric field plus a
    `DocBasedVersionConstraints` update processor with
    `ignoreOldUpdates=true` on it to the collection's solrconfig, then:
 
