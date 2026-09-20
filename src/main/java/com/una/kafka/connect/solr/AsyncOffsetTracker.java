@@ -26,7 +26,7 @@ public final class AsyncOffsetTracker implements OffsetTracker {
         int partition = record.kafkaPartition();
         TopicPartition tp;
         Deque<OffsetState> queue;
-        if (partition == lastPartition && topic.equals(lastTopic) && lastDeque != null) {
+        if (partition == lastPartition && topic.equals(lastTopic)) {
             tp = lastTp;
             queue = lastDeque;
         } else {

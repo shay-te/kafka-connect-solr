@@ -366,6 +366,12 @@ public final class SolrBulkProcessor implements AutoCloseable {
             }
             try {
                 f.get(remaining, TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException e) {
+                // A hung Solr is transient, exactly like a deadline already spent: retry, never fail the task.
+                throw new RetriableException("Solr flush timed out", e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RetriableException("Solr flush interrupted", e);
             } catch (Exception e) {
                 // Early exit on first failure leaves remaining futures in flight.
                 // Their permits release as workers finish; at-least-once is preserved

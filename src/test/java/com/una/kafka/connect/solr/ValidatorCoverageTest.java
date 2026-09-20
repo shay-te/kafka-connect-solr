@@ -189,4 +189,18 @@ class ValidatorCoverageTest {
         Config cfg = validate(p);
         assertThat(errors(cfg, SolrSinkConfig.SOLR_COLLECTION_CONFIG)).isEmpty();
     }
+
+    @Test
+    void proxyCredentialsAreRefusedBecauseTheClientCannotSendThem() {
+        Map<String, String> props = new HashMap<>();
+        props.put(SolrSinkConfig.SOLR_URL_CONFIG, "http://solr:8983/solr");
+        props.put(SolrSinkConfig.SOLR_COLLECTION_CONFIG, "users");
+        props.put(SolrSinkConfig.PROXY_HOST_CONFIG, "proxy.example");
+        props.put(SolrSinkConfig.PROXY_PORT_CONFIG, "3128");
+        assertThat(errors(validate(props), SolrSinkConfig.PROXY_USERNAME_CONFIG)).isEmpty();
+
+        props.put(SolrSinkConfig.PROXY_USERNAME_CONFIG, "proxy-user");
+        assertThat(errors(validate(props), SolrSinkConfig.PROXY_USERNAME_CONFIG))
+                .singleElement().asString().contains("cannot be sent");
+    }
 }

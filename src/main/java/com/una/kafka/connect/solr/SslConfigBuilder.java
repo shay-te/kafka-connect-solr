@@ -32,7 +32,7 @@ public final class SslConfigBuilder {
         }
         char[] storePw = asChars(config.sslKeystorePassword());
         String keyPwStr = config.sslKeyPassword();
-        char[] keyPw = (keyPwStr == null || keyPwStr.isEmpty()) ? storePw : asChars(keyPwStr);
+        char[] keyPw = keyPwStr.isEmpty() ? storePw : asChars(keyPwStr);
         try {
             KeyStore ks = KeyStore.getInstance(config.sslKeystoreType());
             try (InputStream in = new FileInputStream(location)) {
@@ -66,7 +66,7 @@ public final class SslConfigBuilder {
         return tmf;
     }
 
-    private static char[] asChars(String s) {
-        return s == null ? new char[0] : s.toCharArray();
+    private static char[] asChars(String password) {
+        return password.toCharArray();
     }
 }

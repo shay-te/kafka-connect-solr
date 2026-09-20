@@ -81,6 +81,19 @@ class ExternalResourceManagerCloudIT {
     }
 
     @Test
+    void aMissingCollectionIsCreatedThroughTheCollectionsApiOfAPlainNodeUrl() throws Exception {
+        Map<String, String> p = new HashMap<>();
+        p.put(SolrSinkConfig.SOLR_URL_CONFIG, baseUrl);
+        p.put(SolrSinkConfig.EXTERNAL_RESOURCE_USAGE_CONFIG, "AUTO");
+        p.put(SolrSinkConfig.SCHEMA_AUTO_CREATE_CONFIG, "true");
+        ExternalResourceManager mgr = new ExternalResourceManager(client, new SolrSinkConfig(p));
+        // Through CoreAdmin this would have created a bare core, not a collection.
+        mgr.ensure("orders_autocreated");
+        assertThat(mgr.isKnown("orders_autocreated")).isTrue();
+        assertThat(CollectionAdminRequest.listCollections(client)).contains("orders_autocreated");
+    }
+
+    @Test
     void aMissingCollectionIsReportedMissingNotRetried() {
         ExternalResourceManager mgr = manager("REQUIRED");
         assertThatThrownBy(() -> mgr.ensure("not-there"))

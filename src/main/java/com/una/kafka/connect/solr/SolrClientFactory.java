@@ -109,7 +109,9 @@ public final class SolrClientFactory {
     }
 
     private static void applyCommon(Http2SolrClient.Builder builder, SolrSinkConfig config) {
-        builder.useHttp1_1(false);
+        // Cleartext HTTP/2 (prior knowledge) cannot pass an ordinary HTTP proxy, so a proxied client
+        // speaks HTTP/1.1; without this the proxy setting was accepted and every request failed.
+        builder.useHttp1_1(config.proxyEnabled());
         builder.withConnectionTimeout(config.connectionTimeoutMs(), TimeUnit.MILLISECONDS);
         builder.withIdleTimeout(config.readTimeoutMs(), TimeUnit.MILLISECONDS);
 
@@ -137,13 +139,9 @@ public final class SolrClientFactory {
             builder.withSSLConfig(sslConfig);
         }
 
-        if (config.proxyEnabled()) {
-            ProxyConfigurator.apply(config);
-        }
+        ProxyConfigurator.apply(builder, config);
 
-        if (config.connectionCompression() || config.compressRequests()) {
-            CompressionConfigurator.apply(config);
-        }
+        CompressionConfigurator.apply(config);
     }
 
     private static Optional<String> nonEmpty(String s) {

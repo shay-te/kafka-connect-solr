@@ -1,8 +1,10 @@
 package com.una.kafka.connect.solr;
 
+import org.apache.solr.client.solrj.impl.Http2SolrClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/** The proxy SolrJ actually uses. JVM proxy system properties never reached its Jetty client. */
 public final class ProxyConfigurator {
 
     private static final Logger log = LoggerFactory.getLogger(ProxyConfigurator.class);
@@ -10,29 +12,11 @@ public final class ProxyConfigurator {
     private ProxyConfigurator() {
     }
 
-    public static void apply(SolrSinkConfig config) {
-        String host = config.proxyHost();
-        int port = config.proxyPort();
-        if (host == null || host.isEmpty() || port <= 0) {
+    public static void apply(Http2SolrClient.Builder builder, SolrSinkConfig config) {
+        if (!config.proxyEnabled()) {
             return;
         }
-        log.info("Configuring HTTP proxy {}:{}", host, port);
-        System.setProperty("http.proxyHost", host);
-        System.setProperty("http.proxyPort", Integer.toString(port));
-        System.setProperty("https.proxyHost", host);
-        System.setProperty("https.proxyPort", Integer.toString(port));
-        final String user = config.proxyUsername();
-        if (!user.isEmpty()) {
-            final String pass = config.proxyPassword();
-            java.net.Authenticator.setDefault(new java.net.Authenticator() {
-                @Override
-                protected java.net.PasswordAuthentication getPasswordAuthentication() {
-                    if (getRequestorType() == RequestorType.PROXY) {
-                        return new java.net.PasswordAuthentication(user, pass.toCharArray());
-                    }
-                    return null;
-                }
-            });
-        }
+        log.info("Routing Solr traffic through HTTP proxy {}:{}", config.proxyHost(), config.proxyPort());
+        builder.withProxyConfiguration(config.proxyHost(), config.proxyPort(), false, false);
     }
 }

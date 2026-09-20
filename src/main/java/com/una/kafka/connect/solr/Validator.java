@@ -59,8 +59,8 @@ public final class Validator {
         if (!"SSL".equalsIgnoreCase(protocol)) {
             return;
         }
-        checkFile(v, SolrSinkConfig.SSL_KEYSTORE_LOCATION_CONFIG, p.get(SolrSinkConfig.SSL_KEYSTORE_LOCATION_CONFIG), false);
-        checkFile(v, SolrSinkConfig.SSL_TRUSTSTORE_LOCATION_CONFIG, p.get(SolrSinkConfig.SSL_TRUSTSTORE_LOCATION_CONFIG), false);
+        checkFile(v, SolrSinkConfig.SSL_KEYSTORE_LOCATION_CONFIG, p.get(SolrSinkConfig.SSL_KEYSTORE_LOCATION_CONFIG));
+        checkFile(v, SolrSinkConfig.SSL_TRUSTSTORE_LOCATION_CONFIG, p.get(SolrSinkConfig.SSL_TRUSTSTORE_LOCATION_CONFIG));
     }
 
     private static void requireKerberos(Map<String, ConfigValue> v, Map<String, String> p) {
@@ -76,7 +76,7 @@ public final class Validator {
             return;
         }
         if (hasKeytab) {
-            checkFile(v, SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG, keytab, true);
+            checkFile(v, SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG, keytab);
         }
     }
 
@@ -105,6 +105,12 @@ public final class Validator {
         if (linger != null && linger < 0) {
             err(v, SolrSinkConfig.LINGER_MS_CONFIG, "linger.ms must be >= 0.");
         }
+        String proxyUser = p.get(SolrSinkConfig.PROXY_USERNAME_CONFIG);
+        if (proxyUser != null && !proxyUser.isEmpty()) {
+            err(v, SolrSinkConfig.PROXY_USERNAME_CONFIG,
+                    "Proxy credentials cannot be sent: SolrJ's HTTP/2 client exposes no hook for them. "
+                            + "Use a proxy that does not require authentication.");
+        }
         Integer maxRetries = asInt(p.get(SolrSinkConfig.MAX_RETRIES_CONFIG));
         if (maxRetries != null && maxRetries < 0) {
             err(v, SolrSinkConfig.MAX_RETRIES_CONFIG, "max.retries must be >= 0.");
@@ -112,9 +118,8 @@ public final class Validator {
     }
 
     private static void requireOrderingSafety(Map<String, ConfigValue> v, Map<String, String> p) {
-        // Fall back to the ConfigDef default (8) when the key is absent: an omitted
-        // max.in.flight.requests is still >1 at runtime, so skipping the check on `null` would
-        // let the DEFAULT — the config most people ship — through unguarded.
+        // Judge what the task will actually run with: an absent key means the ConfigDef default,
+        // so raising that default must not silently bypass this gate.
         Integer inFlight = asInt(p.get(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG));
         if (inFlight == null) {
             inFlight = (Integer) SolrSinkConfig.config()
@@ -162,11 +167,8 @@ public final class Validator {
         }
     }
 
-    private static void checkFile(Map<String, ConfigValue> v, String key, String path, boolean required) {
+    private static void checkFile(Map<String, ConfigValue> v, String key, String path) {
         if (nullOrEmpty(path)) {
-            if (required) {
-                err(v, key, "Required file path is empty.");
-            }
             return;
         }
         if (!new File(path).exists()) {

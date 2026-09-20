@@ -285,7 +285,7 @@ public class SolrSinkConfig extends AbstractConfig {
                         + "false = preCommit returns offsets only for writes whose ack arrived; "
                         + "much higher throughput when Solr is slow.",
                 g, ++order, Width.SHORT, "Flush synchronously");
-        def.define(MAX_IN_FLIGHT_REQUESTS_CONFIG, Type.INT, 1, Importance.MEDIUM,
+        def.define(MAX_IN_FLIGHT_REQUESTS_CONFIG, Type.INT, 1, ConfigDef.Range.atLeast(1), Importance.MEDIUM,
                 "Concurrent Solr requests per task. Default 1 = strict Kafka-offset apply order. "
                         + "Raising it only preserves order when " + KAFKA_OFFSET_VERSION_FIELD_CONFIG
                         + " is set (with a DocBasedVersionConstraints processor on that field); "
@@ -305,7 +305,9 @@ public class SolrSinkConfig extends AbstractConfig {
         def.define(MAX_BUFFERED_RECORDS_CONFIG, Type.INT, 20_000, Importance.MEDIUM,
                 "Maximum buffered records across all in-flight batches.",
                 g, ++order, Width.SHORT, "Max buffered");
-        def.define(MAX_RETRIES_CONFIG, Type.INT, 5, Importance.MEDIUM,
+        // Range on the ConfigDef, not only in Validator: a task started without validation would
+        // otherwise accept a negative value and fail every batch without ever reaching Solr.
+        def.define(MAX_RETRIES_CONFIG, Type.INT, 5, ConfigDef.Range.atLeast(0), Importance.MEDIUM,
                 "Maximum retry attempts on retryable failures.",
                 g, ++order, Width.SHORT, "Max retries");
         def.define(RETRY_BACKOFF_MS_CONFIG, Type.LONG, 200L, Importance.LOW,

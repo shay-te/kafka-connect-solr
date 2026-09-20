@@ -3,6 +3,11 @@ package com.una.kafka.connect.solr;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+/**
+ * What compression this client can actually do. SolrJ's HTTP/2 client negotiates gzip RESPONSES on its
+ * own (Jetty registers a gzip decoder), and it can neither gzip request bodies nor speak zstd — the
+ * `jetty.client.*` system properties this used to set are read by nothing.
+ */
 public final class CompressionConfigurator {
 
     private static final Logger log = LoggerFactory.getLogger(CompressionConfigurator.class);
@@ -11,33 +16,13 @@ public final class CompressionConfigurator {
     }
 
     public static void apply(SolrSinkConfig config) {
-        if (config.connectionCompression()) {
-            applyResponseCompression(config);
-        }
         if (config.compressRequests()) {
-            applyRequestCompression(config);
+            log.warn("{}=true has no effect: SolrJ's HTTP/2 client cannot compress request bodies",
+                    SolrSinkConfig.CONNECTION_COMPRESSION_REQUESTS_CONFIG);
         }
-    }
-
-    private static void applyResponseCompression(SolrSinkConfig config) {
-        String value;
-        switch (config.compressionAlgorithm()) {
-            case GZIP:
-                value = "gzip";
-                break;
-            case ZSTD:
-                value = "zstd, gzip";
-                break;
-            case NONE:
-            default:
-                return;
+        if (config.connectionCompression() && config.compressionAlgorithm() == SolrSinkConfig.CompressionAlgorithm.ZSTD) {
+            log.warn("{}=ZSTD is not supported; responses are negotiated as gzip",
+                    SolrSinkConfig.CONNECTION_COMPRESSION_ALGORITHM_CONFIG);
         }
-        log.info("Enabling response compression: {}", value);
-        System.setProperty("jetty.client.acceptedEncodings", value);
-    }
-
-    private static void applyRequestCompression(SolrSinkConfig config) {
-        log.info("Enabling outbound request compression (gzip)");
-        System.setProperty("jetty.client.gzipRequests", "true");
     }
 }

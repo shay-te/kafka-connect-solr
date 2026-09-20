@@ -83,7 +83,7 @@ public final class SolrSchemaManager {
     }
 
     private void ensureField(String collection, String name, Schema schema, Set<String> known) {
-        if (name == null || name.isEmpty() || known.contains(name)) {
+        if (name.isEmpty() || known.contains(name)) {
             return;
         }
         Map<String, Object> attrs = new LinkedHashMap<>();

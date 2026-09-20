@@ -20,7 +20,7 @@ row is ✅. Where we go further (do it better) it's 🟢.
 | `flush.synchronously` | `flush.synchronously` | 🟢 (per-record async tracker — finer-grained than ES's per-batch tracker) |
 | `max.retries` | `max.retries` | ✅ |
 | `retry.backoff.ms` | `retry.backoff.ms` | ✅ |
-| `connection.compression` | `connection.compression` | 🟢 (gzip + zstd; ES only gzip) |
+| `connection.compression` | `connection.compression` | 🟡 accepted, but SolrJ's HTTP/2 client negotiates gzip responses itself and cannot gzip requests or speak zstd — the setting only logs what it cannot do |
 | `max.connection.idle.time.ms` | — | 🔴 not supported — idle timeout is `read.timeout.ms` |
 | `connection.timeout.ms` | `connection.timeout.ms` | ✅ |
 | `read.timeout.ms` | `read.timeout.ms` | ✅ |
@@ -34,10 +34,10 @@ row is ✅. Where we go further (do it better) it's 🟢.
 | `behavior.on.malformed.documents` | `behavior.on.malformed.documents` | ✅ |
 | `external.version.header` | `external.version.header` | 🟢 (accepts string / long / bytes payloads — ES only Long) |
 | `write.method` | `write.method` | 🟢 (we add `ATOMIC_UPDATE` for per-field set/inc) |
-| `proxy.host` | `proxy.host` | ✅ |
+| `proxy.host` | `proxy.host` | ✅ (a proxied client falls back to HTTP/1.1: cleartext HTTP/2 cannot traverse an ordinary proxy) |
 | `proxy.port` | `proxy.port` | ✅ |
-| `proxy.username` | `proxy.username` | ✅ |
-| `proxy.password` | `proxy.password` | ✅ |
+| `proxy.username` | `proxy.username` | 🔴 refused by validation: SolrJ's HTTP/2 client has no hook for proxy credentials |
+| `proxy.password` | `proxy.password` | 🔴 as above — use an open proxy |
 | `elastic.security.protocol` | `solr.security.protocol` | ✅ |
 | `ssl.keystore.location` | `ssl.keystore.location` | ✅ |
 | `ssl.keystore.password` | `ssl.keystore.password` | ✅ |

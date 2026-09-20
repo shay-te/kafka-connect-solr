@@ -109,7 +109,7 @@ public final class SolrWriter implements AutoCloseable {
         }
         int partition = record.kafkaPartition();
         String topic = record.topic();
-        if (partition == lastPartition && topic.equals(lastTopic) && lastProcessor != null) {
+        if (partition == lastPartition && topic.equals(lastTopic)) {
             return lastProcessor;
         }
         TopicPartition tp = new TopicPartition(topic, partition);
@@ -250,7 +250,6 @@ public final class SolrWriter implements AutoCloseable {
     }
 
     private Long coerceLong(Object v) {
-        if (v == null) return null;
         if (v instanceof Number) return ((Number) v).longValue();
         if (v instanceof byte[]) return parseAsciiLong((byte[]) v);
         if (v instanceof CharSequence) return parseAsciiLong((CharSequence) v);

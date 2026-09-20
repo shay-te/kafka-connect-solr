@@ -110,6 +110,84 @@ class SolrClientFactoryIT {
         }
     }
 
+    /** Runs {@code body} and restores the JVM-wide properties the configurators may set. */
+    private static void withRestoredSystemProperties(ThrowingRunnable body) throws Exception {
+        String[] keys = {"http.proxyHost", "http.proxyPort", "https.proxyHost", "https.proxyPort",
+                "jetty.client.acceptedEncodings", "jetty.client.gzipRequests"};
+        Map<String, String> saved = new HashMap<>();
+        for (String k : keys) saved.put(k, System.getProperty(k));
+        try {
+            body.run();
+        } finally {
+            for (String k : keys) {
+                if (saved.get(k) == null) System.clearProperty(k);
+                else System.setProperty(k, saved.get(k));
+            }
+            java.net.Authenticator.setDefault(null);
+        }
+    }
+
+    private interface ThrowingRunnable {
+        void run() throws Exception;
+    }
+
+    private static void writeOne(SolrClient client, String id) throws Exception {
+        UpdateRequest req = new UpdateRequest();
+        SolrInputDocument doc = new SolrInputDocument();
+        doc.addField("id", id);
+        doc.addField("title_s", "client variant " + id);
+        req.add(doc);
+        req.setCommitWithin(100);
+        req.process(client, "factory");
+    }
+
+    @Test
+    void aProxiedClientWritesToSolrThroughTheProxy() throws Exception {
+        // An OPEN proxy: SolrJ's client cannot answer a 407, which is why Validator refuses
+        // proxy.username. The write landing in Solr is the proof that the proxy is really used.
+        try (TinyHttpProxy proxy = new TinyHttpProxy(null, null)) {
+            java.net.URI solr = java.net.URI.create(baseUrl);
+            proxy.route(solr.getHost(), new java.net.InetSocketAddress(solr.getHost(), solr.getPort()));
+            Map<String, String> o = new HashMap<>();
+            o.put(SolrSinkConfig.PROXY_HOST_CONFIG, "127.0.0.1");
+            o.put(SolrSinkConfig.PROXY_PORT_CONFIG, Integer.toString(proxy.port()));
+            try (SolrClient client = SolrClientFactory.create(cfg(o))) {
+                writeOne(client, "f-proxy");
+            }
+            SolrTestSupport.awaitHits(baseUrl, "factory", "id:f-proxy", 1L);
+            assertThat(proxy.forwardedRequests()).isGreaterThanOrEqualTo(1);
+        }
+    }
+
+    @Test
+    void compressionSettingsStillProduceAWorkingClient() throws Exception {
+        withRestoredSystemProperties(() -> {
+            Map<String, String> zstd = new HashMap<>();
+            zstd.put(SolrSinkConfig.CONNECTION_COMPRESSION_CONFIG, "true");
+            zstd.put(SolrSinkConfig.CONNECTION_COMPRESSION_ALGORITHM_CONFIG, "ZSTD");
+            try (SolrClient client = SolrClientFactory.create(cfg(zstd))) {
+                writeOne(client, "f-zstd");
+            }
+            Map<String, String> gzipRequests = new HashMap<>();
+            gzipRequests.put(SolrSinkConfig.CONNECTION_COMPRESSION_REQUESTS_CONFIG, "true");
+            try (SolrClient client = SolrClientFactory.create(cfg(gzipRequests))) {
+                writeOne(client, "f-gzip-requests");
+            }
+            SolrTestSupport.awaitHits(baseUrl, "factory", "id:f-zstd OR id:f-gzip-requests", 2L);
+        });
+    }
+
+    @Test
+    void usernameWithoutPasswordSendsNoCredentials() throws Exception {
+        // Half-configured basic auth is ignored rather than sending "user:" to Solr.
+        Map<String, String> o = new HashMap<>();
+        o.put(SolrSinkConfig.CONNECTION_USERNAME_CONFIG, "solr-writer");
+        try (SolrClient client = SolrClientFactory.create(cfg(o))) {
+            writeOne(client, "f-user-only");
+        }
+        SolrTestSupport.awaitHits(baseUrl, "factory", "id:f-user-only", 1L);
+    }
+
     @Test
     void basicAuthCredentialsApplied() throws Exception {
         // Solr container has no auth, but the credentials configurator branch still fires.

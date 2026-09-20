@@ -76,7 +76,7 @@ This is where most of our advantage over the ES connector comes from:
 | Concurrency model | N TCP connections | **1 connection, N concurrent streams** |
 | Per-stream blocking | head-of-line on connection | none (HTTP/2 frames interleave) |
 | Default `max.in.flight.requests` | 5 | 1 (order-safe; raise with `kafka.offset.version.field`) |
-| Response compression | gzip optional | **gzip + zstd opt-in** |
+| Response compression | gzip optional | gzip, negotiated by the client itself (zstd unsupported) |
 
 Concretely: at 8 in-flight requests with 1 KB documents and 5 ms RTT,
 HTTP/1.1 with 5 connections needs 5 TLS handshakes and serializes the
@@ -160,10 +160,9 @@ helps WAN/cross-region deploys where bandwidth is the limit.
 
 Win: 50–70% smaller request payload on text-heavy documents.
 
-Cost: small (Jetty has the support; one config key).
-
-Recommendation: opt-in via `connection.compression.requests=true`.
-Off by default because it costs CPU when the link is fast.
+NOT AVAILABLE with SolrJ's HTTP/2 client: it exposes no hook to gzip a request body, so
+`connection.compression.requests=true` only logs that it has no effect. Responses are already
+negotiated as gzip by Jetty itself. Implementing this needs a custom request writer.
 
 ### 4. Schema-aware encoder cache — ★ — IMPLEMENTED
 
@@ -247,10 +246,8 @@ flush.synchronously=true       # safest offsets
 batch.size=2000
 bulk.size.bytes=5242880
 max.in.flight.requests=8
-connection.compression=true
-connection.compression.algorithm=ZSTD
-# request-side compression when implemented:
-# connection.compression.requests=true
+# compression: responses are gzip-negotiated by the client itself; zstd and request-side
+# compression are not supported by SolrJ's HTTP/2 client (see "feature parity")
 read.timeout.ms=120000          # higher to absorb RTT spikes
 ```
 
@@ -331,4 +328,4 @@ If allocations land in:
   in flight) or implement (5) direct javabin emission.
 - `LinkedHashMap.put` → likely the field map; (5) again.
 - `org.eclipse.jetty.http2.*` → wire layer, your link is the bottleneck;
-  enable request compression (3) or scale tasks.
+  scale tasks (request compression is not available, see (3)).
