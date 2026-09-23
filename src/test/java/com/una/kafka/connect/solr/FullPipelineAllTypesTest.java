@@ -28,12 +28,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  * logical types, BYTES as both byte[] and ByteBuffer, arrays, nested structs, and a map — pushed
  * through {@link SolrRecordConverter}. Real values in, exact Solr fields asserted out.
  *
- * <p>`location` arrives as the "lat,lon" string Postgres now emits via the location_text
- * generated column (the WKB-decoding SMT was removed once the DB produced the value directly).</p>
+ * <p>`location` arrives as the "lat,lon" string the Debezium source already produces: its
+ * {@code GeometryToLatLon} transform converts the PostGIS point before the record reaches Kafka.</p>
  */
 class FullPipelineAllTypesTest {
 
-    /** Empire State Building, in the "lat,lon" form the location_text column emits. */
+    /** Empire State Building, in the "lat,lon" form GeometryToLatLon emits. */
     private static final String POINT_LAT_LON = "40.7484,-73.9857";
     private static final Pattern LAT_LON = Pattern.compile("^-?\\d+(\\.\\d+)?,-?\\d+(\\.\\d+)?$");
 
@@ -50,7 +50,7 @@ class FullPipelineAllTypesTest {
                 .field("lat", Schema.FLOAT64_SCHEMA).field("lon", Schema.FLOAT64_SCHEMA).build();
 
         Schema schema = SchemaBuilder.struct()
-                .field("location",   Schema.STRING_SCHEMA)       // "lat,lon" from location_text
+                .field("location",   Schema.STRING_SCHEMA)       // "lat,lon" from GeometryToLatLon
                 .field("i8",         Schema.INT8_SCHEMA)
                 .field("i16",        Schema.INT16_SCHEMA)
                 .field("i32",        Schema.INT32_SCHEMA)

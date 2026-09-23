@@ -196,17 +196,12 @@ Recommendation: don't. The current code is already past the point of
 diminishing returns on layer 1. Only worth it if a future profile
 shows allocation pressure on the SinkTask hot path.
 
-### 6. WKBToLatLon SMT cost on every CDC record — RESOLVED (removed)
+### 6. Location conversion cost — RESOLVED
 
-The `WKBToLatLon` SMT parsed PostGIS WKB into Solr's `lat,lon` string once per record, which was
-order-of-magnitude larger than any micro-optimisation inside the connector. It has been removed:
-Postgres now emits the value directly via the `location_text` generated column
-(`ST_X`/`ST_Y`), renamed on the wire by Debezium's `renameLocation` SMT. See
-`ob-love-admin-backend/scripts/migrations/2026_06_08_add_user_location_text.sql`.
-
-That was the "best" option this section originally recommended — push the conversion upstream so
-the per-record parse, the Map/Struct copy and the extra record allocation all disappear. The
-transform class and its `jts-core` dependency are gone with it.
+The old sink-side `WKBToLatLon` SMT parsed every record's WKB through `jts-core`. It is gone, and so
+is `jts-core`. The conversion now happens once per `user` change on the Debezium SOURCE
+(`transforms.GeometryToLatLon`): 21 bytes read straight from the WKB, no geometry library, and
+records without the field pass through untouched. The sink hot path no longer converts anything.
 
 ## Tuning recipes
 
