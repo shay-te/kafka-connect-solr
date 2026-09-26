@@ -82,8 +82,19 @@
   <dynamicField name="*_value_8"  type="string"  indexed="true" stored="false" docValues="true" multiValued="true"/>
   <dynamicField name="*_value_9"  type="string"  indexed="true" stored="false" docValues="true" multiValued="true"/>
   <dynamicField name="*_value_1"  type="string"  indexed="true" stored="false" multiValued="true"/>
-  <dynamicField name="*_value_5"  type="string"  indexed="true" stored="false" multiValued="true"/>
+  <dynamicField name="*_value_5"  type="text_ci" indexed="true" stored="false" multiValued="true"/>
   <dynamicField name="*_value_10" type="string"  indexed="true" stored="false" multiValued="true"/>
+  <!-- Free text a person types, searched as "contains": case-insensitive like *_value_2/3.
+       PHOTO and the ADDRESS / SOCIAL_NETWORKS sub-fields (the sink flattens them to dotted names)
+       otherwise fall to the catch-all string, where "tel aviv" never finds "Tel Aviv". Sorting
+       uses *_sort_value, so losing docValues here costs nothing. street_address / zip_code are
+       never indexed (PII). -->
+  <dynamicField name="*_value_11" type="text_ci" indexed="true" stored="false" multiValued="true"/>
+  <dynamicField name="*_value_7.city"    type="text_ci" indexed="true" stored="false" multiValued="true"/>
+  <dynamicField name="*_value_7.state"   type="text_ci" indexed="true" stored="false" multiValued="true"/>
+  <dynamicField name="*_value_7.country" type="text_ci" indexed="true" stored="false" multiValued="true"/>
+  <dynamicField name="*_value_12.type"   type="text_ci" indexed="true" stored="false" multiValued="true"/>
+  <dynamicField name="*_value_12.url"    type="text_ci" indexed="true" stored="false" multiValued="true"/>
 
   <dynamicField name="*_score" type="plong" indexed="true" stored="false" docValues="true" multiValued="true"/>
   <dynamicField name="*_days_in_stage" type="plong" indexed="true" stored="false" docValues="true" multiValued="true"/>

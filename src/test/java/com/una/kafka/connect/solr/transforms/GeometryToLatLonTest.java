@@ -97,6 +97,8 @@ class GeometryToLatLonTest {
         assertNull(GeometryToLatLon.pointToLatLon(point(ByteOrder.LITTLE_ENDIAN, 2, null, 1.0, 2.0)), "LINESTRING");
         assertNull(GeometryToLatLon.pointToLatLon(point(ByteOrder.LITTLE_ENDIAN, 1, null, Double.NaN, Double.NaN)),
                    "POINT EMPTY");
+        assertNull(GeometryToLatLon.pointToLatLon(point(ByteOrder.LITTLE_ENDIAN, 1, null, 34.8, Double.NaN)),
+                   "a longitude without a latitude");
         byte[] sridButShort = new byte[21];
         ByteBuffer.wrap(sridButShort).order(ByteOrder.LITTLE_ENDIAN).put((byte) 1).putInt(0x20000001);
         assertNull(GeometryToLatLon.pointToLatLon(sridButShort), "EWKB whose SRID leaves no room for coordinates");
