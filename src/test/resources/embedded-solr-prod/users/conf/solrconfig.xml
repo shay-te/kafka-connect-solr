@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Mirror of the PRODUCTION solrconfig (objective_love_web/docker/solr/aggregated_user_data).
+  Deletes are handled upstream: the streamer emits a Kafka tombstone for any soft-deleted user,
+  and the connector hard-deletes it in offset order (max.in.flight.requests=1). Solr only ever
+  holds live users, so there is no soft-delete marker to filter and no version constraint.
+-->
+<config>
+  <luceneMatchVersion>9.8.0</luceneMatchVersion>
+  <dataDir>${solr.data.dir:}</dataDir>
+  <directoryFactory name="DirectoryFactory"
+                    class="${solr.directoryFactory:solr.NRTCachingDirectoryFactory}"/>
+  <codecFactory class="solr.SchemaCodecFactory"/>
+  <schemaFactory class="ClassicIndexSchemaFactory"/>
+
+  <updateHandler class="solr.DirectUpdateHandler2">
+    <updateLog>
+      <str name="dir">${solr.ulog.dir:}</str>
+    </updateLog>
+    <autoCommit>
+      <maxTime>${solr.autoCommit.maxTime:15000}</maxTime>
+      <openSearcher>false</openSearcher>
+    </autoCommit>
+    <autoSoftCommit>
+      <maxTime>${solr.autoSoftCommit.maxTime:5000}</maxTime>
+    </autoSoftCommit>
+  </updateHandler>
+
+  <!-- T5.1 / §40b — present and NOT default, mirroring the authoritative configset. See the fuller
+       rationale there: the chain cannot be made default while documents carry no `_offset_ver`,
+       so enabling the guard is two deliberate switches rather than one. -->
+  <updateRequestProcessorChain name="offset-versioning">
+    <processor class="solr.DocBasedVersionConstraintsProcessorFactory">
+      <str name="versionField">_offset_ver</str>
+      <bool name="ignoreOldUpdates">true</bool>
+    </processor>
+    <processor class="solr.LogUpdateProcessorFactory"/>
+    <processor class="solr.RunUpdateProcessorFactory"/>
+  </updateRequestProcessorChain>
+
+  <requestHandler name="/update" class="solr.UpdateRequestHandler"/>
+  <requestHandler name="/select" class="solr.SearchHandler">
+    <lst name="defaults">
+      <str name="echoParams">explicit</str>
+      <str name="df">id</str>
+    </lst>
+  </requestHandler>
+
+  <query>
+    <maxBooleanClauses>1024</maxBooleanClauses>
+    <filterCache class="solr.CaffeineCache" size="512" initialSize="0" autowarmCount="0"/>
+    <queryResultCache class="solr.CaffeineCache" size="512" initialSize="0" autowarmCount="0"/>
+    <documentCache class="solr.CaffeineCache" size="512" initialSize="0" autowarmCount="0"/>
+  </query>
+</config>
