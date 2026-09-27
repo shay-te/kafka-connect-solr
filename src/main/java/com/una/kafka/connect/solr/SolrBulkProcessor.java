@@ -4,6 +4,7 @@ import com.una.kafka.connect.solr.SolrSinkConfig.BehaviorOnMalformed;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.RetriableException;
 import org.apache.solr.client.solrj.SolrClient;
+import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.impl.ConcurrentUpdateHttp2SolrClient;
 import org.apache.solr.client.solrj.request.UpdateRequest;
 import org.apache.solr.common.SolrInputDocument;
@@ -11,6 +12,7 @@ import org.apache.solr.common.SolrInputField;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -28,6 +30,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.Consumer;
 
 /**
  * Buffers upserts and deletes per collection and flushes them to Solr in batches.
@@ -427,47 +430,47 @@ public final class SolrBulkProcessor implements AutoCloseable {
         }
     }
 
+    // A run is only ever created to hold the op being added (see OpBuffer.runFor), so it is never empty.
     private Void sendUpsert(String collection, List<SolrInputDocument> docs, List<OffsetState> states) {
+        return sendRun(collection, "upsert", docs.size(), "docs", docs.get(0).getFieldValue("id"), states,
+                req -> req.add(docs), e -> isolatePoisonRun(collection, docs, null, states, e));
+    }
+
+    private Void sendDelete(String collection, List<String> ids, List<OffsetState> states) {
+        return sendRun(collection, "delete", ids.size(), "ids", ids.get(0), states,
+                req -> req.deleteById(ids), e -> isolatePoisonRun(collection, null, ids, states, e));
+    }
+
+    /**
+     * One run to Solr: logged only in dry-run, otherwise sent with the retry policy. A non-retriable
+     * rejection under WARN/IGNORE means at least one op in the run is poison, so it is isolated op by
+     * op instead of freezing all indexing on it.
+     */
+    private Void sendRun(String collection, String operation, int size, String unit, Object firstId,
+                         List<OffsetState> states, Consumer<UpdateRequest> fill,
+                         Consumer<RuntimeException> isolatePoison) {
         long batchStart = System.nanoTime();
         try {
-            int size = docs.size();
             if (dryRun) {
-                log.info("DRY RUN: would upsert {} docs to collection={} (first id={})",
-                        size, collection,
-                        size == 0 ? "<empty>" : docs.get(0).getFieldValue("id"));
-                recordsWritten.add(size);
-                queueDepth.add(-size);
-                ackAll(states);
-                lastSuccessEpochMs = System.currentTimeMillis();
+                log.info("DRY RUN: would {} {} {} in collection={} (first id={})",
+                        operation, size, unit, collection, firstId);
+                markWritten(size, states);
                 return null;
             }
             try {
                 return RetryUtil.retry(() -> {
-                    UpdateRequest req = new UpdateRequest();
-                    req.add(docs);
-                    if (commitWithinMs > 0) {
-                        req.setCommitWithin(commitWithinMs);
-                    }
-                    long callStart = System.nanoTime();
-                    req.process(client, collection);
-                    solrCallLatencyNanos.add(System.nanoTime() - callStart);
-                    solrCallCount.increment();
-                    recordsWritten.add(size);
-                    queueDepth.add(-size);
-                    ackAll(states);
-                    lastSuccessEpochMs = System.currentTimeMillis();
+                    process(collection, fill);
+                    markWritten(size, states);
                     return null;
                 }, maxRetries, retryBackoffMs,
-                        () -> "Solr upsert(" + collection + ", " + size + " docs)",
+                        () -> "Solr " + operation + "(" + collection + ", " + size + " " + unit + ")",
                         totalRetries);
             } catch (RuntimeException e) {
                 if (e instanceof RetriableException || behaviorOnMalformed == BehaviorOnMalformed.FAIL) {
                     failed(size);
                     throw e;
                 }
-                // Non-retriable Solr rejection with WARN/IGNORE: at least one doc in this run
-                // is poison — isolate it doc-by-doc instead of freezing all indexing on it.
-                isolatePoisonRun(collection, docs, null, states, e);
+                isolatePoison.accept(e);
                 return null;
             }
         } finally {
@@ -476,51 +479,24 @@ public final class SolrBulkProcessor implements AutoCloseable {
         }
     }
 
-    private Void sendDelete(String collection, List<String> ids, List<OffsetState> states) {
-        long batchStart = System.nanoTime();
-        try {
-            int size = ids.size();
-            if (dryRun) {
-                log.info("DRY RUN: would delete {} ids from collection={} (first id={})",
-                        size, collection, size == 0 ? "<empty>" : ids.get(0));
-                recordsWritten.add(size);
-                queueDepth.add(-size);
-                ackAll(states);
-                lastSuccessEpochMs = System.currentTimeMillis();
-                return null;
-            }
-            try {
-                return RetryUtil.retry(() -> {
-                    UpdateRequest req = new UpdateRequest();
-                    req.deleteById(ids);
-                    if (commitWithinMs > 0) {
-                        req.setCommitWithin(commitWithinMs);
-                    }
-                    long callStart = System.nanoTime();
-                    req.process(client, collection);
-                    solrCallLatencyNanos.add(System.nanoTime() - callStart);
-                    solrCallCount.increment();
-                    recordsWritten.add(size);
-                    queueDepth.add(-size);
-                    ackAll(states);
-                    lastSuccessEpochMs = System.currentTimeMillis();
-                    return null;
-                }, maxRetries, retryBackoffMs,
-                        () -> "Solr delete(" + collection + ", " + size + " ids)",
-                        totalRetries);
-            } catch (RuntimeException e) {
-                if (e instanceof RetriableException || behaviorOnMalformed == BehaviorOnMalformed.FAIL) {
-                    failed(size);
-                    throw e;
-                }
-                // Non-retriable Solr rejection with WARN/IGNORE: isolate the poison id-by-id.
-                isolatePoisonRun(collection, null, ids, states, e);
-                return null;
-            }
-        } finally {
-            batchLatencyNanos.add(System.nanoTime() - batchStart);
-            batchCount.increment();
+    /** One timed, counted Solr update call; `fill` adds the documents or the deletes. */
+    private void process(String collection, Consumer<UpdateRequest> fill) throws SolrServerException, IOException {
+        UpdateRequest req = new UpdateRequest();
+        fill.accept(req);
+        if (commitWithinMs > 0) {
+            req.setCommitWithin(commitWithinMs);
         }
+        long callStart = System.nanoTime();
+        req.process(client, collection);
+        solrCallLatencyNanos.add(System.nanoTime() - callStart);
+        solrCallCount.increment();
+    }
+
+    private void markWritten(int size, List<OffsetState> states) {
+        recordsWritten.add(size);
+        queueDepth.add(-size);
+        ackAll(states);
+        lastSuccessEpochMs = System.currentTimeMillis();
     }
 
     /**
@@ -577,19 +553,13 @@ public final class SolrBulkProcessor implements AutoCloseable {
     private void sendOne(String collection, SolrInputDocument doc, String deleteId, OffsetState state) {
         try {
             RetryUtil.retry(() -> {
-                UpdateRequest req = new UpdateRequest();
-                if (doc != null) {
-                    req.add(doc);
-                } else {
-                    req.deleteById(deleteId);
-                }
-                if (commitWithinMs > 0) {
-                    req.setCommitWithin(commitWithinMs);
-                }
-                long callStart = System.nanoTime();
-                req.process(client, collection);
-                solrCallLatencyNanos.add(System.nanoTime() - callStart);
-                solrCallCount.increment();
+                process(collection, req -> {
+                    if (doc != null) {
+                        req.add(doc);
+                    } else {
+                        req.deleteById(deleteId);
+                    }
+                });
                 return null;
             }, maxRetries, retryBackoffMs,
                     () -> "Solr isolated " + (doc == null ? "delete" : "upsert") + "(" + collection + ", 1 op)",
