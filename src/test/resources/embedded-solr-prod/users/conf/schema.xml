@@ -85,6 +85,8 @@
   <copyField source="*_value_6" dest="_text"/>
 
   <dynamicField name="*_sort_value" type="string" indexed="false" stored="false" docValues="true" multiValued="false"/>
+  <!-- NUMBER custom fields only: the numeric twin of *_sort_value (the text key sorts "10" before "2"). -->
+  <dynamicField name="*_sort_number" type="pdouble" indexed="false" stored="false" docValues="true" multiValued="false"/>
 
   <dynamicField name="*_value_2"  type="text_ci" indexed="true" stored="false" multiValued="true"/>
   <dynamicField name="*_value_3"  type="text_ci" indexed="true" stored="false" multiValued="true"/>
@@ -116,6 +118,7 @@
   <fieldType name="string" class="solr.StrField" sortMissingLast="true"/>
   <fieldType name="boolean" class="solr.BoolField" sortMissingLast="true"/>
   <fieldType name="plong" class="solr.LongPointField" sortMissingLast="true"/>
+  <fieldType name="pdouble" class="solr.DoublePointField" sortMissingLast="true"/>
   <fieldType name="location" class="solr.LatLonPointSpatialField"/>
   <fieldType name="text_ci" class="solr.TextField" positionIncrementGap="100" multiValued="true">
     <analyzer>
