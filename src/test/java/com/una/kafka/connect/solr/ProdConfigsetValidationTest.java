@@ -12,7 +12,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Validates the PRODUCTION Solr configset (objective_love_web/docker/solr/aggregated_user_data,
+ * Validates the PRODUCTION Solr configset (ob-love-admin-backend/docker/solr/aggregated_user_data,
  * mirrored under embedded-solr-prod) actually loads and does what the connector needs: the
  * spatial location field powers geofilt, and a tombstone hard-deletes the user (soft-deleted
  * users are kept out of Solr entirely by the streamer, so there is no _deleted field to filter).
