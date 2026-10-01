@@ -252,7 +252,7 @@ Re-run (same harness, 50k docs, 300 iters):
 Absolute ms swing between container boots (both engines moved); the within-run ratios are the
 signal. After the schema fix Solr wins every query in the suite. Deploy note: schema changes
 ship via the blue/green flow — new versioned collection from the updated configset, re-stream,
-flip the alias (README_Solr_BlueGreen_Deploy.md); an in-place RELOAD does not retype existing
+flip the alias (README_Solr_Deploy.md); an in-place RELOAD does not retype existing
 docs.
 
 ## 2026-08-14 — systematic speed hunt (measured on real SolrCloud, 50k prod-shaped docs)
