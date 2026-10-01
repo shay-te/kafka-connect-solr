@@ -34,6 +34,17 @@
   <field name="height" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
   <field name="completion" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
   <field name="conversation_terminated_longest_seconds" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <!-- Search-preference numbers the Users grid sorts and filters on. Undeclared, they fall to the
+       catch-all string below and sort alphabetically ("109" before "66"). -->
+  <field name="age_from" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="age_to" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="age_years_younger" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="age_years_older" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="height_from_cm" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="height_to_cm" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="location_radius" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="admin_user_id" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="created_by_form_id" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
 
   <field name="email" type="text_ci" indexed="true" stored="false" multiValued="false"/>
   <field name="first_name" type="text_ci" indexed="true" stored="false" multiValued="false"/>
@@ -104,7 +115,7 @@
 
   <fieldType name="string" class="solr.StrField" sortMissingLast="true"/>
   <fieldType name="boolean" class="solr.BoolField" sortMissingLast="true"/>
-  <fieldType name="plong" class="solr.LongPointField"/>
+  <fieldType name="plong" class="solr.LongPointField" sortMissingLast="true"/>
   <fieldType name="location" class="solr.LatLonPointSpatialField"/>
   <fieldType name="text_ci" class="solr.TextField" positionIncrementGap="100" multiValued="true">
     <analyzer>
