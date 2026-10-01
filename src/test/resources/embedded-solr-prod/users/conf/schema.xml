@@ -33,6 +33,10 @@
 
   <field name="height" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
   <field name="completion" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <!-- Integer enum and id columns: `status` is range-queried (registration widget) and `conversation_id`
+       is sorted (relationship view), so both must be numbers, not the catch-all string. -->
+  <field name="status" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <field name="conversation_id" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
   <field name="conversation_terminated_longest_seconds" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
   <!-- Search-preference numbers the Users grid sorts and filters on. Undeclared, they fall to the
        catch-all string below and sort alphabetically ("109" before "66"). -->
@@ -59,7 +63,6 @@
   <field name="created_at" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
   <field name="updated_at" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
   <field name="birthday" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
-  <field name="conversation_id" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
   <field name="package_start_date" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
   <field name="package_end_date" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>
   <field name="package_hold_date" type="string" indexed="true" stored="false" docValues="true" multiValued="false"/>

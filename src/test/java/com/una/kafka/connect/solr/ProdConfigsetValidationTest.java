@@ -100,6 +100,84 @@ class ProdConfigsetValidationTest {
         }
     }
 
+    private static java.util.List<String> ids(EmbeddedSolrServer solr, SolrQuery q) throws Exception {
+        java.util.List<String> ids = new java.util.ArrayList<>();
+        solr.query(EmbeddedSolrSupport.CORE, q).getResults()
+                .forEach(doc -> ids.add(doc.getFirstValue("id").toString()));
+        return ids;
+    }
+
+    private static SolrQuery sorted(String... fieldAndOrder) {
+        SolrQuery q = new SolrQuery("*:*").setRows(10);
+        for (int i = 0; i < fieldAndOrder.length; i += 2) {
+            q.addSort(fieldAndOrder[i], SolrQuery.ORDER.valueOf(fieldAndOrder[i + 1]));
+        }
+        return q;
+    }
+
+    /**
+     * The integer columns and the numeric custom-field sort key behave as NUMBERS, with the exact
+     * query shapes the admin backend sends: quoted exact matches ({@code status:"4"}), a range on
+     * status, and the grid sorts. The old schema left these in the catch-all string, so 269 sorted
+     * before 56 and {@code status <= 4} also matched 10.
+     */
+    @Test
+    void integerColumnsAndNumericSortKeysSortAndFilterAsNumbers() throws Exception {
+        EmbeddedSolrServer solr = EmbeddedSolrSupport.start("embedded-solr-prod");
+        try (SolrWriter w = writer(solr)) {
+            Map<String, Object> one = new LinkedHashMap<>();
+            one.put("status", 1); one.put("height_to_cm", 91); one.put("conversation_id", 9);
+            one.put("custom_field_5_sort_number", 2.0); one.put("custom_field_5_sort_value", "2");
+            one.put("custom_field_6_sort_value", "banana");
+            Map<String, Object> two = new LinkedHashMap<>();
+            two.put("status", 4); two.put("height_to_cm", 269); two.put("conversation_id", 10);
+            two.put("custom_field_5_sort_number", 10.0); two.put("custom_field_5_sort_value", "10");
+            two.put("custom_field_6_sort_value", "apple");
+            Map<String, Object> three = new LinkedHashMap<>();
+            three.put("status", 10); three.put("height_to_cm", 56); three.put("conversation_id", 100);
+            three.put("custom_field_5_sort_number", 100.0); three.put("custom_field_5_sort_value", "100");
+            three.put("custom_field_6_sort_value", "cherry");
+            Map<String, Object> four = new LinkedHashMap<>();   // no numbers at all
+            four.put("custom_field_5_sort_value", "abc");
+            w.write(record("1", 10, one));
+            w.write(record("2", 11, two));
+            w.write(record("3", 12, three));
+            w.write(record("4", 13, four));
+            w.flush();
+            solr.commit(EmbeddedSolrSupport.CORE);
+
+            // status: exact (quoted, as the query builder writes it), IN, and a real numeric range.
+            assertThat(hits(solr, new SolrQuery("*:*").addFilterQuery("status:\"4\""))).isEqualTo(1L);
+            assertThat(hits(solr, new SolrQuery("*:*").addFilterQuery("status:(\"1\" OR \"4\")"))).isEqualTo(2L);
+            assertThat(hits(solr, new SolrQuery("*:*").addFilterQuery("status:[* TO 4]")))
+                    .as("status 10 is above 4 numerically (a text range would include it)").isEqualTo(2L);
+
+            // height_to_cm: 269 > 91 > 56; a user without a value is last in BOTH directions.
+            assertThat(ids(solr, sorted("height_to_cm", "desc", "id", "asc")))
+                    .containsExactly("2", "1", "3", "4");
+            assertThat(ids(solr, sorted("height_to_cm", "asc", "id", "asc")))
+                    .containsExactly("3", "1", "2", "4");
+
+            // conversation_id: 100 > 10 > 9 (the relationship view).
+            assertThat(ids(solr, sorted("conversation_id", "desc", "id", "asc")))
+                    .containsExactly("3", "2", "1", "4");
+
+            // NUMBER custom field: numeric key first, then the text key. 2 < 10 < 100; "abc" has no
+            // number so it is last in both directions.
+            assertThat(ids(solr, sorted("custom_field_5_sort_number", "asc", "custom_field_5_sort_value", "asc", "id", "asc")))
+                    .containsExactly("1", "2", "3", "4");
+            assertThat(ids(solr, sorted("custom_field_5_sort_number", "desc", "custom_field_5_sort_value", "desc", "id", "asc")))
+                    .containsExactly("3", "2", "1", "4");
+
+            // A field type with no numeric key: its sort_number ties on every document (the dynamic
+            // field is declared, so naming it is valid) and the text key decides.
+            assertThat(ids(solr, sorted("custom_field_6_sort_number", "asc", "custom_field_6_sort_value", "asc", "id", "asc")))
+                    .containsExactly("2", "1", "3", "4");
+        } finally {
+            EmbeddedSolrSupport.stop(solr);
+        }
+    }
+
     @Test
     void configsetLoadsAndSpatialWorksAndTombstoneHardDeletes() throws Exception {
         EmbeddedSolrServer solr = EmbeddedSolrSupport.start("embedded-solr-prod");
