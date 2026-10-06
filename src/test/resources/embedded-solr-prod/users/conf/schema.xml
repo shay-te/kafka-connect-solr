@@ -7,6 +7,9 @@
 
   <!-- id needs docValues: it is the sort tiebreak on every custom-field sort. -->
   <field name="id" type="string" indexed="true" stored="true" required="true" multiValued="false" docValues="true"/>
+  <!-- `id` is the uniqueKey, which Solr only allows as a string; this numeric copy sorts and pages users by number. -->
+  <field name="id_sort" type="plong" indexed="true" stored="false" docValues="true" multiValued="false"/>
+  <copyField source="id" dest="id_sort"/>
   <field name="_src" type="string" indexed="false" stored="true" docValues="false" multiValued="false"/>
   <field name="_version_" type="plong" indexed="true" stored="true"/>
   <field name="_mapping_version" type="string" indexed="true" stored="false" docValues="false" multiValued="false"/>

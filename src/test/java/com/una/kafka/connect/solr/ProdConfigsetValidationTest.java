@@ -178,6 +178,35 @@ class ProdConfigsetValidationTest {
         }
     }
 
+    /**
+     * The admin backend's owned-user-ids paging (scheduled saved queries): the organization's own users
+     * by {@code owner_organization_id} (no explicit field, so the catch-all string), in NUMBER order on
+     * {@code id_sort} (copied from the string uniqueKey {@code id}), continuing after the last id of the
+     * previous page with an exclusive range.
+     */
+    @Test
+    void ownedUserIdsPageInNumberOrderAfterACursor() throws Exception {
+        EmbeddedSolrServer solr = EmbeddedSolrSupport.start("embedded-solr-prod");
+        try (SolrWriter w = writer(solr)) {
+            long offset = 10;
+            for (String id : new String[] {"2", "9", "10", "100", "11"}) {
+                w.write(record(id, offset++, Map.of("owner_organization_id", 5)));
+            }
+            w.write(record("12", offset, Map.of("owner_organization_id", 6)));
+            w.flush();
+            solr.commit(EmbeddedSolrSupport.CORE);
+
+            SolrQuery firstPage = sorted("id_sort", "asc").addFilterQuery("owner_organization_id:\"5\"");
+            assertThat(ids(solr, firstPage)).containsExactly("2", "9", "10", "11", "100");
+
+            SolrQuery nextPage = sorted("id_sort", "asc").addFilterQuery("owner_organization_id:\"5\"")
+                    .addFilterQuery("id_sort:{10 TO *]");
+            assertThat(ids(solr, nextPage)).as("strictly after the last id returned").containsExactly("11", "100");
+        } finally {
+            EmbeddedSolrSupport.stop(solr);
+        }
+    }
+
     @Test
     void configsetLoadsAndSpatialWorksAndTombstoneHardDeletes() throws Exception {
         EmbeddedSolrServer solr = EmbeddedSolrSupport.start("embedded-solr-prod");
