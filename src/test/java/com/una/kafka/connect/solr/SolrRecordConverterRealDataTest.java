@@ -180,7 +180,7 @@ class SolrRecordConverterRealDataTest {
     }
 
     @Test
-    void nonCompactNestedMapWrapsEachEntryAsKeyValue() {
+    void nonCompactNestedMapFlattensEachEntryToKeyAndValue() {
         SolrRecordConverter c = new SolrRecordConverter(config(SolrSinkConfig.COMPACT_MAP_ENTRIES_CONFIG, "false"));
         Schema schema = SchemaBuilder.struct()
                 .field("attrs", SchemaBuilder.map(Schema.STRING_SCHEMA, Schema.STRING_SCHEMA).build())
@@ -191,14 +191,12 @@ class SolrRecordConverterRealDataTest {
         Struct v = new Struct(schema).put("attrs", attrs);
 
         SolrInputDocument doc = c.convert(rec(schema, v, "u1"));
-        Collection<Object> entries = doc.getFieldValues("attrs");
-        assertThat(entries).hasSize(2);
-        // Each entry is a {key,value} LinkedHashMap preserving the original (typed) key.
-        assertThat(entries).allSatisfy(e -> {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> m = (Map<String, Object>) e;
-            assertThat(m).containsKeys("key", "value");
-        });
+        assertThat(doc.getFieldValues("attrs.key")).containsExactly("hair", "eyes");
+        assertThat(doc.getFieldValues("attrs.value")).containsExactly("brown", "blue");
+        // Solr reads any Map field value as an atomic-update operation.
+        for (String name : doc.getFieldNames()) {
+            assertThat(doc.getFieldValues(name)).as(name).noneMatch(value -> value instanceof Map);
+        }
     }
 
     // ---------- named non-logical schema hits the switch default ----------

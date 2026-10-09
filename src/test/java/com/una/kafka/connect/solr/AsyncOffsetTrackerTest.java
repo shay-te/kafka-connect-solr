@@ -131,4 +131,23 @@ class AsyncOffsetTrackerTest {
         tracker.track(r(1, 0));
         assertThat(tracker.pendingCount()).isEqualTo(3);
     }
+
+    @Test
+    void resetDropsStatesThatCanNeverBeAckedSoARedeliveryCommitsAgain() {
+        AsyncOffsetTracker tracker = new AsyncOffsetTracker();
+        tracker.track(r(0, 0));   // their flush failed: never acked
+        tracker.track(r(0, 1));
+        tracker.track(r(1, 5));
+
+        tracker.reset();
+        OffsetState again0 = tracker.track(r(0, 0));
+        OffsetState again1 = tracker.track(r(0, 1));
+        again0.markAcked();
+        again1.markAcked();
+
+        Map<TopicPartition, OffsetAndMetadata> safe = tracker.safeOffsets(new HashMap<>());
+        assertThat(safe.get(new TopicPartition("t", 0)).offset()).isEqualTo(2L);
+        assertThat(safe).doesNotContainKey(new TopicPartition("t", 1));
+        assertThat(tracker.pendingCount()).isZero();
+    }
 }

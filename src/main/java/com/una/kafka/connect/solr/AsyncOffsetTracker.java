@@ -67,6 +67,15 @@ public final class AsyncOffsetTracker implements OffsetTracker {
     }
 
     @Override
+    public synchronized void reset() {
+        pending.clear();
+        lastTp = null;
+        lastDeque = null;
+        lastTopic = null;
+        lastPartition = -1;
+    }
+
+    @Override
     public synchronized void closePartition(TopicPartition partition) {
         pending.remove(partition);
         if (partition.equals(lastTp)) {

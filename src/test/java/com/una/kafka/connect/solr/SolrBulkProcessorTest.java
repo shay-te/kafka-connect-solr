@@ -219,6 +219,31 @@ class SolrBulkProcessorTest {
     }
 
     @Test
+    void slowBatchesInFlightNeverShrinkTheBatchesThatFollow() throws Exception {
+        // Reaching max.buffered.records must only hold the task back. Counting the records already in flight
+        // against it sent every record to Solr on its own while slow batches were out.
+        java.util.List<Integer> sent = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+        SolrClient client = mock(SolrClient.class);
+        when(client.request(any(UpdateRequest.class), anyString())).thenAnswer(call -> {
+            sent.add(((UpdateRequest) call.getArgument(0)).getDocuments().size());
+            Thread.sleep(30);
+            return new org.apache.solr.common.util.NamedList<>();
+        });
+        Map<String, String> o = new HashMap<>();
+        o.put(SolrSinkConfig.BATCH_SIZE_CONFIG, "10");
+        o.put(SolrSinkConfig.MAX_BUFFERED_RECORDS_CONFIG, "20");   // two batches in flight reach it
+        SolrBulkProcessor bulk = new SolrBulkProcessor(client, cfg(o));
+
+        for (int i = 0; i < 100; i++) {
+            bulk.upsert("c", doc(String.valueOf(i)), null);
+        }
+        bulk.flushSync();
+
+        assertThat(sent).hasSize(10).containsOnly(10);
+        bulk.close();
+    }
+
+    @Test
     void queueDepthReturnsToZeroAfterAPermanentlyFailedBatch() throws Exception {
         // queueDepth gates checkGlobalThresholds(): if a failed batch's ops are never subtracted,
         // the gauge stays above max.buffered.records forever and every later record flushes on

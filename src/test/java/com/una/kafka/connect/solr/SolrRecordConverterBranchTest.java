@@ -121,9 +121,8 @@ class SolrRecordConverterBranchTest {
     }
 
     @Test
-    void atomicUpdateNullFieldValueIsSkipped() {
-        // Specifically: an atomic update doc that contains a SolrInputField whose value is null
-        // is not wrapped in a "set" map.
+    void atomicUpdateSendsANullFieldValueAsSetNull() {
+        // A null field removes it from the stored document: it is sent as {"set": null}, not skipped.
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.WRITE_METHOD_CONFIG, "ATOMIC_UPDATE");
         SolrRecordConverter c = new SolrRecordConverter(cfg(o));
@@ -132,9 +131,8 @@ class SolrRecordConverterBranchTest {
         m.put("present", "yes");
         m.put("missing", null);
         SolrInputDocument doc = c.convert(recMap(m));
-        // present wrapped, missing was never added (addScalar returns when value is null).
         assertThat(doc.getFieldValue("present")).isInstanceOf(Map.class);
-        assertThat(doc.getField("missing")).isNull();
+        assertThat(doc.getFieldValue("missing")).isEqualTo(java.util.Collections.singletonMap("set", null));
     }
 
     @Test

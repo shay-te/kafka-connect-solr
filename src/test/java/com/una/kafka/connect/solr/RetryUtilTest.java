@@ -4,6 +4,9 @@ import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.RetriableException;
 import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.impl.BaseHttpSolrClient;
+import org.apache.solr.common.SolrException;
+import org.apache.solr.common.cloud.ZooKeeperException;
+import org.apache.zookeeper.KeeperException;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -97,5 +100,20 @@ class RetryUtilTest {
         // Causes are walked.
         RuntimeException wrapped = new RuntimeException("outer", new IOException("inner"));
         assertThat(RetryUtil.isRetriable(wrapped)).isTrue();
+    }
+
+    @Test
+    void clusterFailuresTheClientRaisesItselfAreRetriable() {
+        assertThat(RetryUtil.isRetriable(new SolrException(SolrException.ErrorCode.SERVICE_UNAVAILABLE, "no live nodes")))
+                .isTrue();
+        assertThat(RetryUtil.isRetriable(new ZooKeeperException(SolrException.ErrorCode.SERVER_ERROR, "session expired")))
+                .isTrue();
+        assertThat(RetryUtil.isRetriable(new SolrException(SolrException.ErrorCode.BAD_REQUEST,
+                "Could not load collection from ZK: c", new KeeperException.ConnectionLossException()))).isTrue();
+        // Not about the cluster's health: retrying cannot help.
+        assertThat(RetryUtil.isRetriable(new SolrException(SolrException.ErrorCode.BAD_REQUEST, "Collection not found: c")))
+                .isFalse();
+        assertThat(RetryUtil.isRetriable(new SolrException(SolrException.ErrorCode.BAD_REQUEST,
+                "ERROR: [doc=1] unknown field 'x'"))).isFalse();
     }
 }

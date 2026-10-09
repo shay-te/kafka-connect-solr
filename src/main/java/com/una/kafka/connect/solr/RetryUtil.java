@@ -4,6 +4,7 @@ import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.RetriableException;
 import org.apache.solr.client.solrj.SolrServerException;
 import org.apache.solr.client.solrj.impl.BaseHttpSolrClient;
+import org.apache.solr.common.SolrException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -15,6 +16,8 @@ public final class RetryUtil {
 
     private static final Logger log = LoggerFactory.getLogger(RetryUtil.class);
     private static final long MAX_BACKOFF_MS = 30_000L;
+    // ZooKeeper is a runtime-only SolrJ dependency, so its exceptions are recognised by package.
+    private static final String ZOOKEEPER_PACKAGE = "org.apache.zookeeper.";
 
     private RetryUtil() {
     }
@@ -72,13 +75,25 @@ public final class RetryUtil {
         if (t instanceof java.net.SocketTimeoutException
                 || t instanceof java.net.ConnectException
                 || t instanceof java.io.IOException
-                || t instanceof SolrServerException) {
+                || t instanceof SolrServerException
+                || isZooKeeperFailure(t)) {
             return true;
         }
-        if (t instanceof BaseHttpSolrClient.RemoteSolrException) {
-            int code = ((BaseHttpSolrClient.RemoteSolrException) t).code();
-            return code == 429 || code >= 500;
+        if (t instanceof SolrException) {
+            // Busy or failing, answered by Solr or raised by the client itself (a ZooKeeperException is a 5xx).
+            int code = ((SolrException) t).code();
+            if (code == 429 || code >= 500) {
+                return true;
+            }
+            if (t instanceof BaseHttpSolrClient.RemoteSolrException) {
+                return false;
+            }
         }
         return isRetriable(t.getCause());
+    }
+
+    /** An exception of the ZooKeeper client: the cluster state could not be read. */
+    static boolean isZooKeeperFailure(Throwable t) {
+        return t.getClass().getName().startsWith(ZOOKEEPER_PACKAGE);
     }
 }

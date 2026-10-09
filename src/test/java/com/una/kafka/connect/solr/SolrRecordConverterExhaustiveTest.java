@@ -166,7 +166,7 @@ class SolrRecordConverterExhaustiveTest {
     }
 
     @Test
-    void atomicUpdateSkipsNullFieldValue() {
+    void atomicUpdateSendsANullFieldValueAsSetNull() {
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.WRITE_METHOD_CONFIG, "ATOMIC_UPDATE");
         SolrRecordConverter c = new SolrRecordConverter(cfg(o));
@@ -175,9 +175,9 @@ class SolrRecordConverterExhaustiveTest {
                 .field("opt", SchemaBuilder.string().optional().build())
                 .build();
         Struct v = new Struct(schema).put("name", "Ada");
-        // opt left null — should not appear in doc at all because addScalar skips null.
+        // opt left null: sent as {"set": null}, which removes it from the stored document.
         SolrInputDocument doc = c.convert(rec(schema, v));
-        assertThat(doc.getField("opt")).isNull();
+        assertThat(doc.getFieldValue("opt")).isEqualTo(java.util.Collections.singletonMap("set", null));
         assertThat(((Map<?, ?>) doc.getFieldValue("name")).get("set")).isEqualTo("Ada");
     }
 

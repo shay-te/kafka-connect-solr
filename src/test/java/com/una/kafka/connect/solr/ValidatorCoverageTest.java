@@ -73,7 +73,7 @@ class ValidatorCoverageTest {
         p.put(SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG, "/path/does/not/exist");
         Config cfg = validate(p);
         assertThat(errors(cfg, SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG))
-                .anyMatch(s -> s.contains("not found"));
+                .anyMatch(s -> s.contains("not supported"));
     }
 
     @Test
@@ -94,6 +94,30 @@ class ValidatorCoverageTest {
         p.put(SolrSinkConfig.SOLR_URL_CONFIG, "http://x");
         Config cfg = validate(p);
         assertThat(errors(cfg, SolrSinkConfig.SSL_KEYSTORE_LOCATION_CONFIG)).isEmpty();
+    }
+
+    @Test
+    void aBatchLargerThanTheDefaultBufferIsRefusedWhenTheBufferIsLeftUnset() {
+        Map<String, String> p = new HashMap<>();
+        p.put(SolrSinkConfig.SOLR_URL_CONFIG, "http://x");
+        p.put(SolrSinkConfig.BATCH_SIZE_CONFIG, "50000");   // max.buffered.records keeps its default, 20000
+        assertThat(errors(validate(p), SolrSinkConfig.MAX_BUFFERED_RECORDS_CONFIG))
+                .anyMatch(s -> s.contains(">= batch.size"));
+    }
+
+    @Test
+    void everyOrderingLaneMustBeAbleToFillItsBatch() {
+        Map<String, String> p = new HashMap<>();
+        p.put(SolrSinkConfig.SOLR_URL_CONFIG, "http://x");
+        p.put(SolrSinkConfig.BATCH_SIZE_CONFIG, "10000");
+        p.put(SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG, "24");
+        p.put(SolrSinkConfig.ORDERING_LANES_ENABLED_CONFIG, "true");
+        assertThat(errors(validate(p), SolrSinkConfig.MAX_BUFFERED_RECORDS_CONFIG))
+                .as("24 lanes of 10000 under the default 20000")
+                .anyMatch(s -> s.contains("batch.size x max.in.flight.requests"));
+
+        p.put(SolrSinkConfig.MAX_BUFFERED_RECORDS_CONFIG, "240000");
+        assertThat(errors(validate(p), SolrSinkConfig.MAX_BUFFERED_RECORDS_CONFIG)).isEmpty();
     }
 
     @Test

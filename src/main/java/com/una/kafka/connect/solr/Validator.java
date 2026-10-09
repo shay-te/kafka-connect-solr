@@ -22,7 +22,7 @@ public final class Validator {
         requireConnection(byName, props);
         requireExclusiveConnection(byName, props);
         requireSslFiles(byName, props);
-        requireKerberos(byName, props);
+        rejectKerberos(byName, props);
         sanityCheckThroughput(byName, props);
         requireOrderingSafety(byName, props);
         sanityCheckRegexCollection(byName, props);
@@ -63,29 +63,28 @@ public final class Validator {
         checkFile(v, SolrSinkConfig.SSL_TRUSTSTORE_LOCATION_CONFIG, p.get(SolrSinkConfig.SSL_TRUSTSTORE_LOCATION_CONFIG));
     }
 
-    private static void requireKerberos(Map<String, ConfigValue> v, Map<String, String> p) {
-        String principal = p.get(SolrSinkConfig.KERBEROS_PRINCIPAL_CONFIG);
-        String keytab = p.get(SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG);
-        boolean hasPrincipal = !nullOrEmpty(principal);
-        boolean hasKeytab = !nullOrEmpty(keytab);
-        if (hasPrincipal != hasKeytab) {
-            err(v, SolrSinkConfig.KERBEROS_PRINCIPAL_CONFIG,
-                    "Kerberos requires BOTH 'kerberos.user.principal' and 'kerberos.keytab.path'.");
-            err(v, SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG,
-                    "Kerberos requires BOTH 'kerberos.user.principal' and 'kerberos.keytab.path'.");
-            return;
-        }
-        if (hasKeytab) {
-            checkFile(v, SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG, keytab);
+    // Accepting it would send every request unauthenticated.
+    private static void rejectKerberos(Map<String, ConfigValue> v, Map<String, String> p) {
+        for (String key : new String[] {SolrSinkConfig.KERBEROS_PRINCIPAL_CONFIG,
+                SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG}) {
+            if (!nullOrEmpty(p.get(key))) {
+                err(v, key, SolrSinkConfig.KERBEROS_UNSUPPORTED);
+            }
         }
     }
 
     private static void sanityCheckThroughput(Map<String, ConfigValue> v, Map<String, String> p) {
-        Integer batch = asInt(p.get(SolrSinkConfig.BATCH_SIZE_CONFIG));
-        Integer maxBuf = asInt(p.get(SolrSinkConfig.MAX_BUFFERED_RECORDS_CONFIG));
-        if (batch != null && maxBuf != null && maxBuf < batch) {
-            err(v, SolrSinkConfig.MAX_BUFFERED_RECORDS_CONFIG,
-                    "max.buffered.records (" + maxBuf + ") must be >= batch.size (" + batch + ").");
+        Integer batch = intOrDefault(p, SolrSinkConfig.BATCH_SIZE_CONFIG);
+        Integer maxBuf = intOrDefault(p, SolrSinkConfig.MAX_BUFFERED_RECORDS_CONFIG);
+        Integer lanes = intOrDefault(p, SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG);
+        // With ordering lanes every lane fills its own batch; a smaller cap sends them all partly filled.
+        int buffers = isTrue(p.get(SolrSinkConfig.ORDERING_LANES_ENABLED_CONFIG)) && lanes != null && lanes > 1
+                ? lanes : 1;
+        if (batch != null && maxBuf != null && maxBuf < (long) batch * buffers) {
+            err(v, SolrSinkConfig.MAX_BUFFERED_RECORDS_CONFIG, buffers == 1
+                    ? "max.buffered.records (" + maxBuf + ") must be >= batch.size (" + batch + ")."
+                    : "max.buffered.records (" + maxBuf + ") must be >= batch.size x max.in.flight.requests ("
+                            + batch + " x " + buffers + "): each ordering lane fills its own batch.");
         }
         if (batch != null && batch < 1) {
             err(v, SolrSinkConfig.BATCH_SIZE_CONFIG, "batch.size must be >= 1.");
@@ -189,6 +188,12 @@ public final class Validator {
 
     private static boolean nullOrEmpty(String s) {
         return s == null || s.trim().isEmpty();
+    }
+
+    // An absent key means the ConfigDef default: judge what the task will actually run with.
+    private static Integer intOrDefault(Map<String, String> p, String key) {
+        String value = p.get(key);
+        return value == null ? (Integer) SolrSinkConfig.config().configKeys().get(key).defaultValue : asInt(value);
     }
 
     private static Integer asInt(String s) {

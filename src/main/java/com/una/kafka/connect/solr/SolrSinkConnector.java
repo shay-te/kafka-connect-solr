@@ -36,10 +36,11 @@ public class SolrSinkConnector extends SinkConnector {
 
     @Override
     public List<Map<String, String>> taskConfigs(int maxTasks) {
-        Map<String, String> shared = Map.copyOf(props);
         List<Map<String, String>> configs = new ArrayList<>(maxTasks);
         for (int i = 0; i < maxTasks; i++) {
-            configs.add(shared);
+            Map<String, String> task = new HashMap<>(props);
+            task.put(SolrSinkTaskMetrics.TASK_ID_CONFIG, String.valueOf(i));
+            configs.add(task);
         }
         return configs;
     }

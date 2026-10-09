@@ -1,5 +1,6 @@
 package com.una.kafka.connect.solr;
 
+import org.apache.kafka.common.config.ConfigException;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.impl.CloudHttp2SolrClient;
 import org.apache.solr.client.solrj.impl.ConcurrentUpdateHttp2SolrClient;
@@ -7,10 +8,13 @@ import org.apache.solr.client.solrj.impl.Http2SolrClient;
 import org.apache.solr.client.solrj.impl.LBHttp2SolrClient;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SolrClientFactoryTest {
 
@@ -74,7 +78,23 @@ class SolrClientFactoryTest {
         p.put(SolrSinkConfig.SOLR_URL_CONFIG, "http://solr:8983/solr");
         p.put(SolrSinkConfig.STREAMING_ENABLED_CONFIG, "true");
         try (SolrClient c = SolrClientFactory.create(newConfig(p))) {
-            assertThat(c).isInstanceOf(ConcurrentUpdateHttp2SolrClient.class);
+            // The subclass that keeps what Solr refused, so a flush cannot succeed over it.
+            assertThat(c).isInstanceOf(ConcurrentUpdateHttp2SolrClient.class).isInstanceOf(StreamingSolrClient.class);
+        }
+    }
+
+    @Test
+    void refusesKerberosInsteadOfSendingUnauthenticatedRequests() throws Exception {
+        Path keytab = Files.createTempFile("solr-sink", ".keytab");
+        try {
+            Map<String, String> p = new HashMap<>();
+            p.put(SolrSinkConfig.SOLR_URL_CONFIG, "http://solr:8983/solr");
+            p.put(SolrSinkConfig.KERBEROS_PRINCIPAL_CONFIG, "user@REALM");
+            p.put(SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG, keytab.toString());
+            assertThatThrownBy(() -> SolrClientFactory.create(newConfig(p)))
+                    .isInstanceOf(ConfigException.class).hasMessageContaining("not supported");
+        } finally {
+            Files.delete(keytab);
         }
     }
 

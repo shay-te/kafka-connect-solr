@@ -167,9 +167,10 @@ class SolrBulkProcessorPoisonEmbeddedTest {
     }
 
     @Test
-    void warnModeDeleteRejectionFallsBackIdByIdAndAcks() throws Exception {
-        // A real, permanently rejected delete run (no such core). WARN must isolate id-by-id,
-        // drop each rejected delete, count it failed and ack it — the task survives.
+    void warnModeNeverAcksDeletesSentToAMissingCollection() throws Exception {
+        // A missing core is not about the documents: dropping the deletes under WARN would silently
+        // stop the collection receiving changes. The embedded server answers it with its own 500,
+        // so the flush fails retriably and nothing is acked.
         try (SolrBulkProcessor bulk = new SolrBulkProcessor(solr, config(
                 SolrSinkConfig.BEHAVIOR_ON_MALFORMED_DOCS_CONFIG, "warn",
                 SolrSinkConfig.MAX_RETRIES_CONFIG, "0"))) {
@@ -178,10 +179,10 @@ class SolrBulkProcessorPoisonEmbeddedTest {
             bulk.delete("no_such_core", "a", s1);
             bulk.delete("no_such_core", "b", s2);
 
-            bulk.flushSync(); // must NOT throw
+            assertThatThrownBy(bulk::flushSync).isInstanceOf(RetriableException.class);
             assertThat(bulk.recordsFailed()).isEqualTo(2);
-            assertThat(s1.isAcked()).isTrue();
-            assertThat(s2.isAcked()).isTrue();
+            assertThat(s1.isAcked()).isFalse();
+            assertThat(s2.isAcked()).isFalse();
         }
     }
 }

@@ -3,6 +3,7 @@ package com.una.kafka.connect.solr;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.connect.data.Schema;
+import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.errors.RetriableException;
 import org.apache.kafka.connect.sink.SinkRecord;
@@ -10,6 +11,8 @@ import org.apache.kafka.connect.sink.SinkTaskContext;
 import org.apache.solr.client.solrj.SolrClient;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
@@ -89,15 +92,74 @@ class SolrSinkTaskTest {
     }
 
     @Test
-    void unexpectedExceptionWrappedAsRetriable() {
+    void aFailureThatIsNotTransientFailsTheTaskInsteadOfRetryingForever() {
+        // Connect redelivers a RetriableException's batch forever while the task reports RUNNING.
+        for (RuntimeException bug : new RuntimeException[] {new NullPointerException("bug"),
+                new IllegalArgumentException("bad SolrJ argument"), new ClassCastException("bad cast")}) {
+            SolrWriter writer = mock(SolrWriter.class);
+            doThrow(bug).when(writer).write(any());
+            doThrow(bug).when(writer).flushIfLingerElapsed();
+            TestTask task = new TestTask(mock(SolrClient.class), writer);
+            task.start(baseProps());
+
+            SinkRecord r = new SinkRecord("users", 0, Schema.STRING_SCHEMA, "a", null, "x", 1L);
+            assertThatThrownBy(() -> task.put(Collections.singletonList(r))).as("put, %s", bug)
+                    .isInstanceOf(ConnectException.class).isNotInstanceOf(RetriableException.class)
+                    .hasCauseInstanceOf(bug.getClass());
+            assertThatThrownBy(() -> task.put(Collections.emptyList())).as("idle flush, %s", bug)
+                    .isInstanceOf(ConnectException.class).isNotInstanceOf(RetriableException.class);
+            task.stop();
+        }
+    }
+
+    @Test
+    void aTransientFailureIsRetried() {
+        UncheckedIOException reset = new UncheckedIOException(new IOException("connection reset"));
         SolrWriter writer = mock(SolrWriter.class);
-        doThrow(new RuntimeException("kaboom")).when(writer).write(any());
+        doThrow(reset).when(writer).write(any());
+        doThrow(reset).when(writer).flushIfLingerElapsed();
         TestTask task = new TestTask(mock(SolrClient.class), writer);
         task.start(baseProps());
 
         SinkRecord r = new SinkRecord("users", 0, Schema.STRING_SCHEMA, "a", null, "x", 1L);
+        assertThatThrownBy(() -> task.put(Collections.singletonList(r))).isInstanceOf(RetriableException.class);
+        assertThatThrownBy(() -> task.put(Collections.emptyList())).isInstanceOf(RetriableException.class);
+        task.stop();
+    }
+
+    @Test
+    void aSinkThatWritesNothingForTheRetryTimeoutFailsTheTask() throws Exception {
+        // RUNNING must mean progress: a Solr that takes no write for retry.timeout.ms fails the task.
+        SolrWriter writer = mock(SolrWriter.class);
+        doThrow(new RetriableException("Solr is down")).when(writer).write(any());
+        TestTask task = new TestTask(mock(SolrClient.class), writer);
+        Map<String, String> p = baseProps();
+        p.put(SolrSinkConfig.RETRY_TIMEOUT_MS_CONFIG, "100");
+        task.start(p);
+
+        SinkRecord r = new SinkRecord("users", 0, Schema.STRING_SCHEMA, "a", null, "x", 1L);
+        assertThatThrownBy(() -> task.put(Collections.singletonList(r))).isInstanceOf(RetriableException.class);
+        Thread.sleep(150);
         assertThatThrownBy(() -> task.put(Collections.singletonList(r)))
-                .isInstanceOf(RetriableException.class);
+                .isInstanceOf(ConnectException.class).isNotInstanceOf(RetriableException.class)
+                .hasMessageContaining(SolrSinkConfig.RETRY_TIMEOUT_MS_CONFIG);
+        task.stop();
+    }
+
+    @Test
+    void aWriteThatGetsThroughRestartsTheRetryClock() throws Exception {
+        SolrWriter writer = mock(SolrWriter.class);
+        doThrow(new RetriableException("Solr is down")).when(writer).write(any());
+        TestTask task = new TestTask(mock(SolrClient.class), writer);
+        Map<String, String> p = baseProps();
+        p.put(SolrSinkConfig.RETRY_TIMEOUT_MS_CONFIG, "100");
+        task.start(p);
+
+        SinkRecord r = new SinkRecord("users", 0, Schema.STRING_SCHEMA, "a", null, "x", 1L);
+        assertThatThrownBy(() -> task.put(Collections.singletonList(r))).isInstanceOf(RetriableException.class);
+        Thread.sleep(150);
+        when(writer.lastSuccessEpochMs()).thenReturn(System.currentTimeMillis());
+        assertThatThrownBy(() -> task.put(Collections.singletonList(r))).isInstanceOf(RetriableException.class);
         task.stop();
     }
 

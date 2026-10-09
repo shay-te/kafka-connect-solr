@@ -3,7 +3,9 @@ package com.una.kafka.connect.solr;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
+import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.DataException;
+import org.apache.kafka.connect.sink.ErrantRecordReporter;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.request.UpdateRequest;
@@ -11,15 +13,18 @@ import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class SolrWriterTest {
 
@@ -128,6 +133,47 @@ class SolrWriterTest {
         Struct v = new Struct(s).put("x", "y");
         SinkRecord r = new SinkRecord("users", 0, null, null, s, v, 1L);
         assertThatCode(() -> w.write(r)).doesNotThrowAnyException();
+        w.close();
+    }
+
+    private static SinkRecord unconvertible() {
+        // A null key under the KAFKA_KEY id strategy cannot become a document.
+        Schema s = SchemaBuilder.struct().field("x", Schema.STRING_SCHEMA).build();
+        return new SinkRecord("users", 0, null, null, s, new Struct(s).put("x", "y"), 1L);
+    }
+
+    private SolrWriter writerReportingTo(ErrantRecordReporter reporter, String behaviorOnMalformed) {
+        Map<String, String> overrides = new HashMap<>();
+        overrides.put(SolrSinkConfig.BEHAVIOR_ON_MALFORMED_DOCS_CONFIG, behaviorOnMalformed);
+        overrides.put(SolrSinkConfig.ID_STRATEGY_CONFIG, "KAFKA_KEY");
+        return new SolrWriter(mock(SolrClient.class), cfg(overrides), new SyncOffsetTracker(), reporter);
+    }
+
+    @Test
+    void aRecordThatCannotBeConvertedReachesTheDlqAndCountsAsFailedBeforeItIsDropped() throws Exception {
+        for (String behavior : new String[] {"warn", "ignore"}) {
+            ErrantRecordReporter reporter = mock(ErrantRecordReporter.class);
+            when(reporter.report(any(), any())).thenReturn(CompletableFuture.completedFuture(null));
+            SinkRecord record = unconvertible();
+            try (SolrWriter w = writerReportingTo(reporter, behavior)) {
+                w.write(record);
+
+                verify(reporter).report(eq(record), any(DataException.class));
+                assertThat(w.recordsFailed()).as(behavior).isEqualTo(1);
+            }
+        }
+    }
+
+    @Test
+    void aReporterThatRefusesAnUnconvertibleRecordStopsTheTaskInsteadOfDroppingIt() {
+        // errors.tolerance=none with a DLQ configured: the reporter refuses, so nothing may be dropped.
+        ErrantRecordReporter reporter = mock(ErrantRecordReporter.class);
+        when(reporter.report(any(), any())).thenThrow(new ConnectException("Tolerance exceeded in error handler"));
+        SolrWriter w = writerReportingTo(reporter, "warn");
+
+        assertThatThrownBy(() -> w.write(unconvertible())).isInstanceOf(ConnectException.class)
+                .hasMessageContaining("errant-record reporter refused a record that could not be converted");
+        assertThat(w.recordsFailed()).isZero();
         w.close();
     }
 

@@ -156,8 +156,8 @@ The connector-side validation we DO own is in:
 
 | ES test | Solr equivalent |
 |---|---|
-| `testHappyPath` / `testHappyPathDataFormat` | 🆕 `SolrVsElasticsearchPerfTest.solrIsFasterThanElasticsearch` exercises the full happy path end-to-end |
-| `testDelete` | 🆕 head-to-head also runs delete path via tombstones |
+| `testHappyPath` / `testHappyPathDataFormat` | 🆕 `SolrSinkConnectWorkerTest.recordsAndTombstonesReachSolrThroughAWorker` (a real Connect worker and Kafka broker in-process) |
+| `testDelete` | 🆕 `SolrSinkConnectWorkerTest.recordsAndTombstonesReachSolrThroughAWorker` (tombstone → delete) |
 | `testUpsert` | ✅ `atomicUpdateWrapsSetOps` |
 | `testBatchByByteSize` | ➖ Solr connector batches by record count |
 | `testHappyPathDataStream`, `testBackwardsCompatibilityDataStream*`, `testMultiTopicToMultiDataStreamAliasWithRollover` | ➖ data-stream-only |
@@ -166,7 +166,7 @@ The connector-side validation we DO own is in:
 | `testConcurrentRequests` | ✅ `SolrBulkProcessorStressTest.concurrentBatchesBeatSequentialUnderLatency` |
 | `testReadTimeout`, `testRetry`, `testServiceUnavailable`, `testTooManyRequests` | ✅ `RetryUtilTest.classification` (full matrix incl. 429/5xx) |
 | `testPausePartitions*` | ✅ `SolrBulkProcessorStressTest.backpressureDoesNotDeadlock` |
-| `testStopESContainer` | ✅ `RetryUtilTest` covers network failures |
+| `testStopESContainer` | 🆕 `SolrSinkConnectWorkerTest.aSolrOutageIsRetriedUntilSolrIsBackAndNothingIsLost` (Connect redelivers, nothing lost) |
 | `testBackwardsCompatibility` | ➖ ES major-version compat |
 | `testStrictMappings` | ➖ ES-only mapping concept |
 | `testChangeConfigsAndRestart` | ➖ Kafka Connect framework concern |
@@ -174,6 +174,7 @@ The connector-side validation we DO own is in:
 | `testReconfigureToUseRoutingSMT`, `testRoutingSmt*` | ➖ ES routing SMT (we use ID strategies) |
 | `testResourceMappingMultipleTopicsToIndices` | ✅ `CollectionResolverTest.regexReplacement` |
 | `testKerberos*`, `testSecureConnection*` | 🅿 SSL/Kerberos deferred |
+| Dead-letter queue (`errors.deadletterqueue.*`) | 🆕 `SolrSinkConnectWorkerTest.aDocumentSolrRejectsGoesToTheDeadLetterQueueAndTheRestIndex` |
 
 ## Solr-specific tests with no ES counterpart
 

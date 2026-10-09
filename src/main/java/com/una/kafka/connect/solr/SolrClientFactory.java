@@ -1,14 +1,17 @@
 package com.una.kafka.connect.solr;
 
+import org.apache.kafka.common.config.ConfigException;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.embedded.SSLConfig;
 import org.apache.solr.client.solrj.impl.CloudHttp2SolrClient;
 import org.apache.solr.client.solrj.impl.ConcurrentUpdateHttp2SolrClient;
 import org.apache.solr.client.solrj.impl.Http2SolrClient;
 import org.apache.solr.client.solrj.impl.LBHttp2SolrClient;
+import org.eclipse.jetty.util.ssl.SslContextFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.net.ssl.SSLContext;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
@@ -22,7 +25,9 @@ public final class SolrClientFactory {
     }
 
     public static SolrClient create(SolrSinkConfig config) {
-        KerberosConfigurator.install(config);
+        if (config.kerberosEnabled()) {
+            throw new ConfigException(SolrSinkConfig.KERBEROS_UNSUPPORTED);
+        }
 
         if (config.isCloud()) {
             if (config.streamingEnabled()) {
@@ -102,10 +107,9 @@ public final class SolrClientFactory {
         Http2SolrClient http2 = inner.build();
         // Pass closeHttp2Client=true so CUHTTP2.close() also closes the inner client.
         // Without this flag the delegate Http2SolrClient leaks on shutdown.
-        return new ConcurrentUpdateHttp2SolrClient.Builder(url, http2, true)
+        return new StreamingSolrClient(new ConcurrentUpdateHttp2SolrClient.Builder(url, http2, true)
                 .withQueueSize(config.streamingQueueSize())
-                .withThreadCount(config.streamingThreads())
-                .build();
+                .withThreadCount(config.streamingThreads()));
     }
 
     private static void applyCommon(Http2SolrClient.Builder builder, SolrSinkConfig config) {
@@ -122,21 +126,13 @@ public final class SolrClientFactory {
         }
 
         if (config.sslEnabled()) {
-            // SslConfigBuilder.build is invoked to surface keystore/truststore load errors
-            // before we hand the raw paths to SolrJ's SSLConfig.
+            SSLContext context;
             try {
-                SslConfigBuilder.build(config);
+                context = SslConfigBuilder.build(config);
             } catch (Exception e) {
                 throw new IllegalArgumentException("Failed to build SSL context: " + e.getMessage(), e);
             }
-            SSLConfig sslConfig = new SSLConfig(
-                    true,
-                    false,
-                    config.sslKeystoreLocation(),
-                    config.sslKeystorePassword(),
-                    config.sslTruststoreLocation(),
-                    config.sslTruststorePassword());
-            builder.withSSLConfig(sslConfig);
+            builder.withSSLConfig(new ContextSslConfig(context));
         }
 
         ProxyConfigurator.apply(builder, config);
@@ -146,5 +142,25 @@ public final class SolrClientFactory {
 
     private static Optional<String> nonEmpty(String s) {
         return (s == null || s.isEmpty()) ? Optional.empty() : Optional.of(s);
+    }
+
+    /**
+     * Gives Jetty the context built from every ssl.* setting: SolrJ's own SSLConfig applies a truststore only with
+     * client auth on, and never the store types or the key password.
+     */
+    private static final class ContextSslConfig extends SSLConfig {
+        private final SSLContext context;
+
+        ContextSslConfig(SSLContext context) {
+            super(true, false, null, null, null, null);
+            this.context = context;
+        }
+
+        @Override
+        public SslContextFactory.Client createClientContextFactory() {
+            SslContextFactory.Client factory = new SslContextFactory.Client();
+            factory.setSslContext(context);
+            return factory;
+        }
     }
 }

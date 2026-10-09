@@ -92,8 +92,8 @@ What you control via the connector:
 - `commit.within.ms` — soft-commit cadence. The lower it is, the more
   the indexer pauses to make recent writes visible. For ingestion-heavy
   loads, raise this (5000–10000 ms).
-- `write.method=ATOMIC_UPDATE` — Solr-only; partial field updates
-  without re-shipping the whole doc.
+- `write.method=UPSERT` / `ATOMIC_UPDATE` — partial field updates
+  without re-shipping the whole doc (`ATOMIC_UPDATE` never creates one).
 - `solr.zk.host` over `solr.url` — `CloudHttp2SolrClient` hashes each
   doc id and sends straight to the owning shard leader. ES has a
   coordinator hop here.
@@ -205,6 +205,11 @@ records without the field pass through untouched. The sink hot path no longer co
 
 ## Tuning recipes
 
+Every recipe raises `max.in.flight.requests`, so each keeps per-document order with ordering lanes; the
+connector refuses more than one in-flight request without lanes or `kafka.offset.version.field` (see the
+README's ordering section). Each lane fills its own batch, so `max.buffered.records` must cover
+`batch.size` x `max.in.flight.requests`.
+
 ### Maximum throughput, LAN deploy
 
 ```properties
@@ -212,6 +217,7 @@ batch.size=5000
 bulk.size.bytes=10485760      # 10 MiB
 linger.ms=20
 max.in.flight.requests=16
+ordering.lanes.enabled=true
 max.buffered.records=80000
 commit.within.ms=5000
 flush.synchronously=false      # use AsyncOffsetTracker
@@ -231,6 +237,7 @@ batch.size=200
 bulk.size.bytes=524288         # 512 KiB
 linger.ms=5
 max.in.flight.requests=4
+ordering.lanes.enabled=true
 commit.within.ms=1000
 flush.synchronously=true       # safest offsets
 ```
@@ -241,6 +248,7 @@ flush.synchronously=true       # safest offsets
 batch.size=2000
 bulk.size.bytes=5242880
 max.in.flight.requests=8
+ordering.lanes.enabled=true
 # compression: responses are gzip-negotiated by the client itself; zstd and request-side
 # compression are not supported by SolrJ's HTTP/2 client (see "feature parity")
 read.timeout.ms=120000          # higher to absorb RTT spikes
@@ -253,6 +261,8 @@ batch.size=10000
 bulk.size.bytes=20971520        # 20 MiB
 linger.ms=100
 max.in.flight.requests=24
+ordering.lanes.enabled=true
+max.buffered.records=240000
 commit.within.ms=30000          # commit rarely while we backfill
 flush.synchronously=false
 ```

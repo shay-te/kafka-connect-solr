@@ -33,53 +33,36 @@ Package: `com.una.kafka.connect.solr`
 SolrRecordConverter  SolrBulkProcessor  SolrSchemaManager  CollectionResolver
 ```
 
-Helpers: `SolrClientFactory`, `RetryUtil`.
+Helpers: `SolrClientFactory`, `RetryUtil`, `SolrVersionDetector`, `SolrSinkTaskMetrics` (JMX).
 
 ## Configuration (mirrors the Elasticsearch sink)
 
-| Key                          | Default     | Notes                                                              |
-|------------------------------|-------------|--------------------------------------------------------------------|
-| `solr.url`                   | _required*_ | Comma-separated base URLs (`http://host:8983/solr`)                |
-| `solr.zk.host`               | _required*_ | Zookeeper string for SolrCloud (mutually exclusive with solr.url)  |
-| `solr.collection`            | `""`        | Default collection / core. Falls back to topic if empty            |
-| `connection.username`        | `""`        | Basic-auth user                                                    |
-| `connection.password`        | `""`        | Basic-auth password                                                |
-| `connection.timeout.ms`      | `5000`      | HTTP connect timeout                                               |
-| `read.timeout.ms`            | `60000`     | HTTP read timeout                                                  |
-| `key.ignore`                 | `false`     |                                                                    |
-| `schema.ignore`              | `false`     |                                                                    |
-| `behavior.on.null.values`    | `ignore`    | `ignore` / `delete` / `fail`                                       |
-| `behavior.on.malformed.documents` | `fail` | `ignore` / `warn` / `fail`                                         |
-| `batch.size`                 | `2000`      | Records per bulk update                                            |
-| `linger.ms`                  | `50`        | Time to wait while filling a batch; also how long a partial batch waits once records stop arriving (the task asks Connect to wake it), measured from the last flush |
-| `flush.timeout.ms`           | `30000`     | Max wait when flushing                                             |
-| `max.in.flight.requests`     | `1`         | Concurrent Solr requests per task; >1 needs `kafka.offset.version.field` or `ordering.lanes.enabled` |
-| `ordering.lanes.enabled`     | `false`     | With in-flight >1: route each document to a lane by id, one request at a time per lane, so per-document order holds without the version guard. `false` = shared pool |
-| `max.buffered.records`       | `20000`     | Back-pressure threshold                                            |
-| `max.retries`                | `5`         | Max attempts on retryable failures                                 |
-| `retry.backoff.ms`           | `200`       | Initial backoff, doubles up to 30s                                 |
-| `write.method`               | `INDEX`     | `INDEX` / `UPSERT` / `ATOMIC_UPDATE`                               |
-| `id.strategy`                | `KAFKA_KEY` | `KAFKA_KEY` / `RECORD_FIELD` / `TOPIC_PARTITION_OFFSET` / `UUID`   |
-| `id.field`                   | `id`        | Dot-path for `RECORD_FIELD`                                        |
-| `collection.naming.strategy` | `TOPIC`     | `TOPIC` / `STATIC` / `TOPIC_REGEX`                                 |
-| `schema.auto.create`         | `false`     | Try to create the collection on SolrCloud                          |
-| `schema.auto.evolve`         | `false`     | Auto-add new fields to managed schema                              |
-| `commit.within.ms`           | `1000`      | Solr `commitWithin` sent with every batch                          |
-| `streaming.enabled`          | `false`     | Wrap the client in `ConcurrentUpdateHttp2SolrClient` (HTTP/2 streaming). Standalone Solr only; forces sync offsets |
-| `streaming.queue.size`       | `10000`     | Internal queue when `streaming.enabled=true`                       |
-| `streaming.threads`          | `4`         | Streaming worker threads when `streaming.enabled=true`             |
-| `partition.fanout.enabled`   | `false`     | One BulkProcessor per Kafka partition (use when tasks.max < partitions) |
-| `dry.run`                    | `false`     | Log intended Solr actions without writing                          |
-| `mapping.version`            | `""`        | If set, stamp every doc with `_mapping_version=<value>`            |
+Every setting, with its type, default and description, is in
+[`docs/configuration.rst`](docs/configuration.rst), generated from the connector's `ConfigDef`:
+`SolrSinkConfig.main` prints it, and `SolrSinkConfigDocsTest` fails when the file is stale (it writes
+the fresh copy to `target/configuration.rst`). Exactly one of `solr.url` / `solr.zk.host` must be set.
 
-\* exactly one of `solr.url` / `solr.zk.host` must be set.
+## Metrics (JMX)
+
+Each running task registers `com.una.kafka.connect.solr:type=sink-task-metrics,connector=<name>,task=<id>`
+with `RecordsWritten`, `RecordsFailed`, `Retries`, `BatchLatencyAvgMs`, `SolrRequestLatencyAvgMs`,
+`QueueDepth` and `SolrVersion` (read by `SolrVersionDetector`; `unknown` when the login lacks Solr's
+`config-read` permission).
 
 ## Delivery guarantees
 
 - At-least-once delivery, with idempotent writes when the unique key is
   stable (`id.strategy` != `UUID`).
-- `429` and `5xx` are retried with exponential backoff (max 30 s).
-- `4xx` is reported to Kafka Connect so the record lands in the DLQ.
+- `429` and `5xx` (answered by Solr or raised by the client), ZooKeeper and transport failures
+  are retried with exponential backoff (max 30 s), never dead-lettered.
+- When no write reaches Solr for `retry.timeout.ms` of such retries (10 minutes by default) the task
+  fails, so a stalled sink shows as FAILED rather than RUNNING.
+- A document Solr rejects (`400`, `409`, `413`), or a record that cannot be converted to one, is
+  reported to Kafka Connect's errant-record reporter (the DLQ, with `errors.tolerance=all` and a DLQ
+  topic), counted as failed and dropped under `behavior.on.malformed.documents=warn|ignore`; under
+  `fail` it stops the task.
+- Any other failure (`401`, `403`, `404`, `405`: auth, permission, a missing collection) acks
+  nothing and stops the task.
 - Leader election / collection unavailable on SolrCloud retries
   transparently via the CloudHttp2SolrClient.
 
@@ -134,8 +117,9 @@ validator accepts the first two):
    really does carry the document's current `_version_`.
 
 2. **Use atomic updates for partial mutations.** When only some fields
-   change, set `write.method=ATOMIC_UPDATE`. Solr merges field-by-field
-   so reordering is benign at the field level.
+   change, set `write.method=UPSERT` (or `ATOMIC_UPDATE` when the document
+   must already exist). Solr merges field-by-field so reordering is benign
+   at the field level.
 
 3. **Stay at `max.in.flight.requests=1` (the default).** Every batch is
    acked before the next is sent, so *cross-batch* reordering disappears.
@@ -195,9 +179,12 @@ commit.within.ms=5000
 mvn -DskipTests package
 docker compose up -d
 curl -s -XPOST -H "Content-Type: application/json" \
-    --data @config/quickstart-solr.properties \
+    --data @config/quickstart-solr.json \
     http://localhost:8084/connectors
 ```
+
+`config/quickstart-solr.json` is the REST body; `config/quickstart-solr.properties` holds the same settings for
+`connect-standalone`.
 
 ## Building
 

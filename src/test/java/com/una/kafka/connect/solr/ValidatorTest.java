@@ -4,6 +4,8 @@ import org.apache.kafka.common.config.Config;
 import org.apache.kafka.common.config.ConfigValue;
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -71,20 +73,18 @@ class ValidatorTest {
     }
 
     @Test
-    void kerberosRequiresBothKeys() {
-        Map<String, String> p = valid();
-        p.put(SolrSinkConfig.KERBEROS_PRINCIPAL_CONFIG, "user@REALM");
-        Config result = new SolrSinkConnector().validate(p);
-        assertThat(hasErrorFor(result, SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG)).isTrue();
-    }
-
-    @Test
-    void kerberosKeytabMustExist() {
-        Map<String, String> p = valid();
-        p.put(SolrSinkConfig.KERBEROS_PRINCIPAL_CONFIG, "user@REALM");
-        p.put(SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG, "/no/such/keytab");
-        Config result = new SolrSinkConnector().validate(p);
-        assertThat(hasErrorFor(result, SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG)).isTrue();
+    void kerberosIsRefusedBecauseNoRequestWouldAuthenticateWithIt() throws Exception {
+        Path keytab = Files.createTempFile("solr-sink", ".keytab");
+        try {
+            Map<String, String> p = valid();
+            p.put(SolrSinkConfig.KERBEROS_PRINCIPAL_CONFIG, "user@REALM");
+            p.put(SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG, keytab.toString());
+            Config result = new SolrSinkConnector().validate(p);
+            assertThat(hasErrorFor(result, SolrSinkConfig.KERBEROS_PRINCIPAL_CONFIG)).isTrue();
+            assertThat(hasErrorFor(result, SolrSinkConfig.KERBEROS_KEYTAB_PATH_CONFIG)).isTrue();
+        } finally {
+            Files.delete(keytab);
+        }
     }
 
     @Test

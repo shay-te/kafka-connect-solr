@@ -3,10 +3,14 @@ package com.una.kafka.connect.solr;
 import com.una.kafka.connect.solr.SolrSinkConfig.BehaviorOnMalformed;
 import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.RetriableException;
+import org.apache.kafka.connect.sink.ErrantRecordReporter;
+import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.solr.client.solrj.SolrClient;
 import org.apache.solr.client.solrj.SolrServerException;
+import org.apache.solr.client.solrj.impl.BaseHttpSolrClient;
 import org.apache.solr.client.solrj.impl.ConcurrentUpdateHttp2SolrClient;
 import org.apache.solr.client.solrj.request.UpdateRequest;
+import org.apache.solr.common.SolrException;
 import org.apache.solr.common.SolrInputDocument;
 import org.apache.solr.common.SolrInputField;
 import org.slf4j.Logger;
@@ -20,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -75,6 +80,11 @@ public final class SolrBulkProcessor implements AutoCloseable {
     // this, a worker that failed BEFORE flushSync ran would be silently dropped by the reap and
     // flushSync would report success — in sync mode that commits offsets past the lost batch.
     private final AtomicReference<Throwable> reapedFailure = new AtomicReference<>();
+    // A failure the task must stop on: anything that is not about one document, or a rejection under
+    // `fail`. Never cleared, so put() and every later flush throw it and no offset is committed past it.
+    private final AtomicReference<ConnectException> fatalFailure = new AtomicReference<>();
+    // Connect's errant-record reporter (the DLQ); null when the connector has none configured.
+    private final ErrantRecordReporter reporter;
 
     private final int batchSize;
     private final long lingerNanos;
@@ -85,9 +95,8 @@ public final class SolrBulkProcessor implements AutoCloseable {
     private final long flushTimeoutMs;
     private final int commitWithinMs;
     private final boolean dryRun;
-    // Governs FLUSH-TIME poison docs too: a doc that converts fine but that Solr rejects
-    // non-retriably (400 schema conflict etc.) is isolated instead of killing the task
-    // when this is WARN or IGNORE. FAIL keeps the historical throw-on-rejection behavior.
+    // Governs FLUSH-TIME poison docs too: a doc Solr rejects (see isDocumentRejection) is isolated,
+    // reported to the DLQ and dropped under WARN or IGNORE; under FAIL it stops the task.
     private final BehaviorOnMalformed behaviorOnMalformed;
 
     private volatile long lastSuccessEpochMs = 0L;
@@ -95,6 +104,9 @@ public final class SolrBulkProcessor implements AutoCloseable {
     // ONE ordered buffer per collection lane (one lane unless lanes are on): upserts and deletes
     // share it in insertion order.
     private final Map<String, OpBuffer[]> buffers = new HashMap<>();
+    // Records in the buffers, not yet handed to a worker: what max.buffered.records caps. Records in flight are
+    // held back by the in-flight permits; counting them too sent every record alone while slow batches were out.
+    private long bufferedRecords;
     private long lastFlushNanos = System.nanoTime();
 
     private String lastCollection;
@@ -111,7 +123,12 @@ public final class SolrBulkProcessor implements AutoCloseable {
     private final LongAdder solrCallCount = new LongAdder();
 
     public SolrBulkProcessor(SolrClient client, SolrSinkConfig config) {
+        this(client, config, null);
+    }
+
+    public SolrBulkProcessor(SolrClient client, SolrSinkConfig config, ErrantRecordReporter reporter) {
         this.client = client;
+        this.reporter = reporter;
         this.batchSize = config.batchSize();
         this.lingerNanos = TimeUnit.MILLISECONDS.toNanos(config.lingerMs());
         this.bulkSizeBytes = config.bulkSizeBytes();
@@ -153,11 +170,19 @@ public final class SolrBulkProcessor implements AutoCloseable {
      * @param preComputedBytes a non-negative byte estimate or {@code -1} to compute on demand.
      */
     public void upsert(String collection, SolrInputDocument doc, long preComputedBytes, OffsetState offsetState) {
+        upsert(collection, doc, preComputedBytes, offsetState, null);
+    }
+
+    /** As above; {@code record} is what a Solr rejection of this document is reported with (the DLQ). */
+    public void upsert(String collection, SolrInputDocument doc, long preComputedBytes, OffsetState offsetState,
+                       SinkRecord record) {
         OpBuffer buf = bufferFor(collection, doc.getFieldValue("id"));
         Run run = buf.runFor(false);
         run.docs.add(doc);
         run.states.add(offsetState);
+        run.records.add(record);
         buf.size++;
+        bufferedRecords++;
         if (bulkSizeBytes > 0) {
             buf.bytes += preComputedBytes >= 0 ? preComputedBytes : estimateBytes(doc);
         }
@@ -166,11 +191,17 @@ public final class SolrBulkProcessor implements AutoCloseable {
     }
 
     public void delete(String collection, String id, OffsetState offsetState) {
+        delete(collection, id, offsetState, null);
+    }
+
+    public void delete(String collection, String id, OffsetState offsetState, SinkRecord record) {
         OpBuffer buf = bufferFor(collection, id);
         Run run = buf.runFor(true);
         run.ids.add(id);
         run.states.add(offsetState);
+        run.records.add(record);
         buf.size++;
+        bufferedRecords++;
         queueDepth.increment();
         maybeFlush(collection, buf);
     }
@@ -210,10 +241,9 @@ public final class SolrBulkProcessor implements AutoCloseable {
     }
 
     private void checkGlobalThresholds() {
-        // queueDepth.sum() is a cheap LongAdder read; nanoTime is ~5× more expensive.
-        // At high throughput maxBufferedRecords trips long before lingerNanos, so checking
-        // it first lets us short-circuit out without the nanoTime call.
-        if (queueDepth.sum() >= maxBufferedRecords) {
+        // nanoTime is ~5× more expensive than the buffered count; at high throughput maxBufferedRecords
+        // trips long before lingerNanos, so checking it first lets us short-circuit out without the nanoTime call.
+        if (bufferedRecords >= maxBufferedRecords) {
             flushBuffers();
             return;
         }
@@ -228,8 +258,17 @@ public final class SolrBulkProcessor implements AutoCloseable {
      * failure is gone, so the next preCommit would commit past the lost records.
      */
     public void flushAsync() {
+        throwIfFatal();
         flushBuffers();
         throwIfReaped();
+    }
+
+    /** Throws the failure the task must stop on, if one happened; see {@link #fatalFailure}. */
+    public void throwIfFatal() {
+        ConnectException failure = fatalFailure.get();
+        if (failure != null) {
+            throw failure;
+        }
     }
 
     /** Sends every buffer. A failure is only recorded here, never thrown or cleared. */
@@ -326,6 +365,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
         buf.runs = new ArrayList<>();
         buf.size = 0;
         buf.bytes = 0L;
+        bufferedRecords -= size;
         try {
             submit(() -> sendRuns(collection, runs), buf.lane);
         } catch (RuntimeException e) {
@@ -333,6 +373,7 @@ public final class SolrBulkProcessor implements AutoCloseable {
             buf.runs = runs;
             buf.size = size;
             buf.bytes = bytes;
+            bufferedRecords += size;
             throw e;
         }
     }
@@ -346,10 +387,18 @@ public final class SolrBulkProcessor implements AutoCloseable {
     private void sendRuns(String collection, List<Run> runs) {
         for (int i = 0, n = runs.size(); i < n; i++) {
             Run run = runs.get(i);
-            if (run.delete) {
-                sendDelete(collection, run.ids, run.states);
-            } else {
-                sendUpsert(collection, run.docs, run.states);
+            try {
+                if (run.delete) {
+                    sendDelete(collection, run.ids, run.states, run.records);
+                } else {
+                    sendUpsert(collection, run.docs, run.states, run.records);
+                }
+            } catch (RuntimeException e) {
+                // The failed run counted itself; the runs it aborts leave the queue as failed too.
+                for (int j = i + 1; j < n; j++) {
+                    failed(runs.get(j).states.size());
+                }
+                throw e;
             }
         }
     }
@@ -386,10 +435,19 @@ public final class SolrBulkProcessor implements AutoCloseable {
         }
         // CUHTTP2 queues docs internally; block on its drain so reported offsets are acked.
         if (client instanceof ConcurrentUpdateHttp2SolrClient) {
+            Throwable failure;
             try {
                 ((ConcurrentUpdateHttp2SolrClient) client).blockUntilFinished();
+                // Its runner threads hand a batch Solr refused only to handleError, never to the caller.
+                failure = client instanceof StreamingSolrClient ? ((StreamingSolrClient) client).takeFailure() : null;
             } catch (Exception e) {
-                throw new RetriableException("Solr streaming flush failed", e);
+                failure = e;
+            }
+            if (failure != null) {
+                if (RetryUtil.isRetriable(failure)) {
+                    throw new RetriableException("Solr streaming flush failed", failure);
+                }
+                throw fatal("Solr streaming flush failed", failure);
             }
         }
     }
@@ -398,10 +456,11 @@ public final class SolrBulkProcessor implements AutoCloseable {
         if (cause instanceof RetriableException || RetryUtil.isRetriable(cause)) {
             return new RetriableException("Solr bulk request failed", cause);
         }
-        // Permanent rejection (e.g. Solr 400 — bad document / schema-type conflict).
-        // Retrying can NEVER succeed, so do not wrap it as retriable: that would loop the
-        // whole pipeline forever on one poison-pill record. Surface a non-retriable error
-        // so Kafka Connect fails fast / routes it via errors.tolerance + DLQ.
+        if (cause instanceof ConnectException) {
+            return (ConnectException) cause;
+        }
+        // Permanent: never retriable, or one poison record would loop the pipeline forever. Thrown from
+        // preCommit it only rewinds, so a worker also records it as fatal and put() fails the task.
         return new ConnectException(
                 "Solr rejected a document (non-retriable): " + cause.getMessage(), cause);
     }
@@ -431,20 +490,22 @@ public final class SolrBulkProcessor implements AutoCloseable {
     }
 
     // A run is only ever created to hold the op being added (see OpBuffer.runFor), so it is never empty.
-    private Void sendUpsert(String collection, List<SolrInputDocument> docs, List<OffsetState> states) {
+    private Void sendUpsert(String collection, List<SolrInputDocument> docs, List<OffsetState> states,
+                            List<SinkRecord> records) {
         return sendRun(collection, "upsert", docs.size(), "docs", docs.get(0).getFieldValue("id"), states,
-                req -> req.add(docs), e -> isolatePoisonRun(collection, docs, null, states, e));
+                req -> req.add(docs), e -> isolatePoisonRun(collection, docs, null, states, records, e));
     }
 
-    private Void sendDelete(String collection, List<String> ids, List<OffsetState> states) {
+    private Void sendDelete(String collection, List<String> ids, List<OffsetState> states,
+                            List<SinkRecord> records) {
         return sendRun(collection, "delete", ids.size(), "ids", ids.get(0), states,
-                req -> req.deleteById(ids), e -> isolatePoisonRun(collection, null, ids, states, e));
+                req -> req.deleteById(ids), e -> isolatePoisonRun(collection, null, ids, states, records, e));
     }
 
     /**
-     * One run to Solr: logged only in dry-run, otherwise sent with the retry policy. A non-retriable
-     * rejection under WARN/IGNORE means at least one op in the run is poison, so it is isolated op by
-     * op instead of freezing all indexing on it.
+     * One run to Solr: logged only in dry-run, otherwise sent with the retry policy. A document rejection
+     * under WARN/IGNORE means at least one op in the run is poison, so it is isolated op by op instead of
+     * freezing all indexing on it. Any other non-retriable failure stops the task, nothing acked.
      */
     private Void sendRun(String collection, String operation, int size, String unit, Object firstId,
                          List<OffsetState> states, Consumer<UpdateRequest> fill,
@@ -466,9 +527,13 @@ public final class SolrBulkProcessor implements AutoCloseable {
                         () -> "Solr " + operation + "(" + collection + ", " + size + " " + unit + ")",
                         totalRetries);
             } catch (RuntimeException e) {
-                if (e instanceof RetriableException || behaviorOnMalformed == BehaviorOnMalformed.FAIL) {
+                if (e instanceof RetriableException) {
                     failed(size);
                     throw e;
+                }
+                if (behaviorOnMalformed == BehaviorOnMalformed.FAIL || !isDocumentRejection(e)) {
+                    failed(size);
+                    throw fatal(e);
                 }
                 isolatePoison.accept(e);
                 return null;
@@ -500,18 +565,17 @@ public final class SolrBulkProcessor implements AutoCloseable {
     }
 
     /**
-     * Fallback for a run Solr rejected NON-retriably while behavior.on.malformed.documents is
+     * Fallback for a run Solr rejected as bad documents while behavior.on.malformed.documents is
      * WARN or IGNORE: re-send the run one op at a time (docs one-by-one, deletes id-by-id) so
-     * only the op(s) Solr actually rejects are dropped — logged per the policy, counted in
-     * {@code recordsFailed} and ACKED so the pipeline moves past them — while every healthy op
-     * still lands, in the original order. A retriable failure mid-isolation counts the
-     * unprocessed remainder failed and propagates; those offsets stay un-acked so Connect
-     * redelivers them (at-least-once).
+     * only the op(s) Solr actually rejects are dropped — reported to the DLQ, logged per the policy,
+     * counted in {@code recordsFailed} and ACKED so the pipeline moves past them — while every healthy
+     * op still lands, in the original order. Any other failure mid-isolation (retriable, or not about a
+     * document) counts the unprocessed remainder failed and propagates; those offsets stay un-acked.
      *
      * <p>Exactly one of {@code docs} / {@code ids} is non-null (upsert run vs delete run).
      */
     private void isolatePoisonRun(String collection, List<SolrInputDocument> docs,
-                                  List<String> ids, List<OffsetState> states,
+                                  List<String> ids, List<OffsetState> states, List<SinkRecord> records,
                                   RuntimeException rejection) {
         boolean delete = docs == null;
         int size = delete ? ids.size() : docs.size();
@@ -525,20 +589,19 @@ public final class SolrBulkProcessor implements AutoCloseable {
         }
         for (int i = 0; i < size; i++) {
             try {
-                sendOne(collection, delete ? null : docs.get(i), delete ? ids.get(i) : null, states.get(i));
-            } catch (RetriableException re) {
+                sendOne(collection, delete ? null : docs.get(i), delete ? ids.get(i) : null, states.get(i),
+                        records.get(i));
+            } catch (RuntimeException notDropped) {
                 failed(size - i);
-                throw re;
+                throw notDropped;
             }
         }
     }
 
     /**
-     * Count ops as failed AND drop them from the buffered-record gauge. queueDepth is incremented
-     * once per buffered op and only ever decremented on a SUCCESSFUL send, so without this a single
-     * exhausted-retry batch leaves the gauge permanently above {@code max.buffered.records} —
-     * {@link #checkGlobalThresholds()} then fires a flush for EVERY subsequent record, collapsing
-     * batching into one Solr request per document for the rest of the task's life.
+     * Count ops as failed AND drop them from the queue-depth gauge. queueDepth is incremented once per
+     * buffered op and only ever decremented on a SUCCESSFUL send, so without this a single exhausted-retry
+     * batch leaves the gauge JMX reports permanently too high.
      */
     private void failed(int count) {
         recordsFailed.add(count);
@@ -546,11 +609,12 @@ public final class SolrBulkProcessor implements AutoCloseable {
     }
 
     /**
-     * Sends a single op with the standard retry policy. A non-retriable rejection here pins the
-     * poison op: it is dropped per the malformed policy (WARN logs it, IGNORE stays silent),
+     * Sends a single op with the standard retry policy. A document rejection here pins the poison op:
+     * it is reported to the DLQ, dropped per the malformed policy (WARN logs it, IGNORE stays silent),
      * counted failed and its offset acked so one bad document cannot freeze all Solr indexing.
      */
-    private void sendOne(String collection, SolrInputDocument doc, String deleteId, OffsetState state) {
+    private void sendOne(String collection, SolrInputDocument doc, String deleteId, OffsetState state,
+                         SinkRecord record) {
         try {
             RetryUtil.retry(() -> {
                 process(collection, req -> {
@@ -571,6 +635,10 @@ public final class SolrBulkProcessor implements AutoCloseable {
         } catch (RetriableException re) {
             throw re;
         } catch (RuntimeException poison) {
+            if (!isDocumentRejection(poison)) {
+                throw fatal(poison);
+            }
+            reportRejected(record, poison, REJECTED_DOCUMENT);
             if (behaviorOnMalformed == BehaviorOnMalformed.WARN) {
                 log.warn("Dropping {} rejected by Solr (collection={}): {}",
                         doc == null ? "delete of id=" + deleteId : "document id=" + doc.getFieldValue("id"),
@@ -579,6 +647,93 @@ public final class SolrBulkProcessor implements AutoCloseable {
             recordsFailed.increment();
             queueDepth.decrement();
             if (state != null) state.markAcked();
+        }
+    }
+
+    // The SolrJ cloud client's own error for a collection missing from the cluster state: a 400 not about a document.
+    private static final String CLOUD_MISSING_COLLECTION = "Collection not found";
+
+    /**
+     * True when Solr rejected the documents themselves: 400 (bad field value, unknown field, immense term),
+     * 409 (version conflict) or 413 (too large). Auth, permission, a missing collection, unreadable cluster
+     * state, a transport failure or any other failure is about the request or its target, so dropping
+     * documents for it would silently stop indexing.
+     */
+    static boolean isDocumentRejection(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof SolrException) {
+                int code = ((SolrException) cause).code();
+                boolean notAboutDocuments = !(cause instanceof BaseHttpSolrClient.RemoteSolrException)
+                        && (String.valueOf(cause.getMessage()).startsWith(CLOUD_MISSING_COLLECTION)
+                        || hasClusterOrTransportCause(cause));
+                return !notAboutDocuments && (code == 400 || code == 409 || code == 413);
+            }
+        }
+        return false;
+    }
+
+    // ZkStateReader reports a failed or interrupted ZooKeeper read as the client's own 400.
+    private static boolean hasClusterOrTransportCause(Throwable failure) {
+        for (Throwable cause = failure.getCause(); cause != null; cause = cause.getCause()) {
+            if (cause instanceof IOException || cause instanceof InterruptedException
+                    || RetryUtil.isZooKeeperFailure(cause)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Records a failure the task must stop on and returns it; see {@link #fatalFailure}. */
+    private ConnectException fatal(RuntimeException cause) {
+        String reason = isDocumentRejection(cause)
+                ? "Solr rejected a document (non-retriable)"
+                : "Solr failed the request for a reason that is not about a document (auth, permission, missing collection, cluster state)";
+        return fatal(reason, cause);
+    }
+
+    private ConnectException fatal(String reason, Throwable cause) {
+        ConnectException failure = new ConnectException(reason + ": " + cause.getMessage(), cause);
+        fatalFailure.compareAndSet(null, failure);
+        return failure;
+    }
+
+    private static final String REJECTED_DOCUMENT = "a document Solr rejected";
+    private static final String UNCONVERTIBLE_RECORD = "a record that could not be converted";
+
+    /**
+     * A record dropped before it became a Solr op because it could not be converted: it reaches the DLQ and
+     * counts as failed, like a document Solr rejected. It was never buffered, so the queue depth is untouched.
+     */
+    void dropUnconvertible(SinkRecord record, RuntimeException failure) {
+        reportRejected(record, failure, UNCONVERTIBLE_RECORD);
+        recordsFailed.increment();
+    }
+
+    /**
+     * Writes {@code what} to Connect's errant-record reporter (the DLQ) and waits until it is written, so its
+     * offset is only acked once the DLQ has it. A reporter that refuses (errors.tolerance=none) or cannot write
+     * stops the task instead.
+     */
+    private void reportRejected(SinkRecord record, RuntimeException rejection, String what) {
+        if (reporter == null || record == null) {
+            return;
+        }
+        Future<Void> written;
+        try {
+            synchronized (reporter) {
+                written = reporter.report(record, rejection);
+            }
+        } catch (RuntimeException refused) {
+            throw fatal("The errant-record reporter refused " + what, refused);
+        }
+        try {
+            written.get();
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new RetriableException("Interrupted while reporting " + what, ie);
+        } catch (ExecutionException ee) {
+            throw fatal("The errant-record reporter could not write " + what,
+                    ee.getCause() != null ? ee.getCause() : ee);
         }
     }
 
@@ -700,6 +855,8 @@ public final class SolrBulkProcessor implements AutoCloseable {
         final List<SolrInputDocument> docs;
         final List<String> ids;
         final List<OffsetState> states = new ArrayList<>();
+        // The source record of each op, for reporting a Solr rejection; null entries for callers without one.
+        final List<SinkRecord> records = new ArrayList<>();
 
         Run(boolean delete) {
             this.delete = delete;

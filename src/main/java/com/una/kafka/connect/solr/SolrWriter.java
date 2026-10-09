@@ -6,6 +6,7 @@ import com.una.kafka.connect.solr.SolrSinkConfig.BehaviorOnMalformed;
 import com.una.kafka.connect.solr.SolrSinkConfig.BehaviorOnNullValues;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.connect.errors.DataException;
+import org.apache.kafka.connect.sink.ErrantRecordReporter;
 import org.apache.kafka.connect.header.Header;
 import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.sink.SinkRecord;
@@ -36,6 +37,8 @@ public final class SolrWriter implements AutoCloseable {
     private final SolrSchemaManager schemaManager;
     private final ExternalResourceManager resources;
     private final OffsetTracker offsetTracker;
+    // Where a document Solr rejects goes (the DLQ); null when Connect has none configured.
+    private final ErrantRecordReporter reporter;
 
     private final Set<String> topicsIgnoreKey;
     private final Set<String> topicsIgnoreSchema;
@@ -66,7 +69,13 @@ public final class SolrWriter implements AutoCloseable {
     private SolrBulkProcessor lastProcessor;
 
     public SolrWriter(SolrClient client, SolrSinkConfig config, OffsetTracker offsetTracker) {
+        this(client, config, offsetTracker, null);
+    }
+
+    public SolrWriter(SolrClient client, SolrSinkConfig config, OffsetTracker offsetTracker,
+                      ErrantRecordReporter reporter) {
         this.client = client;
+        this.reporter = reporter;
         this.config = config;
         this.converter = new SolrRecordConverter(config);
         this.schemaManager = new SolrSchemaManager(client, config);
@@ -94,7 +103,7 @@ public final class SolrWriter implements AutoCloseable {
             this.perPartition = new ConcurrentHashMap<>();
             log.info("SolrWriter: per-partition fanout enabled");
         } else {
-            this.sharedProcessor = new SolrBulkProcessor(client, config);
+            this.sharedProcessor = new SolrBulkProcessor(client, config, reporter);
             this.perPartition = null;
         }
     }
@@ -116,7 +125,7 @@ public final class SolrWriter implements AutoCloseable {
         SolrBulkProcessor proc = perPartition.get(tp);
         if (proc == null) {
             proc = perPartition.computeIfAbsent(tp,
-                    k -> new SolrBulkProcessor(client, config));
+                    k -> new SolrBulkProcessor(client, config, reporter));
         }
         lastTopic = topic;
         lastPartition = partition;
@@ -149,6 +158,11 @@ public final class SolrWriter implements AutoCloseable {
             boolean keyIgnored = keyIgnoreGlobal
                     || (!topicsIgnoreKeyEmpty && topicsIgnoreKey.contains(topic));
             SolrInputDocument doc = converter.convert(record, keyIgnored);
+            if (doc == null) {
+                log.debug("{}-{}@{} sets no field under {}: nothing to write", topic, record.kafkaPartition(),
+                        record.kafkaOffset(), config.writeMethod());
+                return;
+            }
             if (!sourceField.isEmpty()) {
                 // Stored-only raw document so queries can return the original nested shape that
                 // Solr's flattening drops. Index-only denormalized fields are excluded so the
@@ -171,9 +185,9 @@ public final class SolrWriter implements AutoCloseable {
             long bytes = sourceField.isEmpty()
                     ? converter.lastConversionByteEstimate()
                     : -1L;
-            bulk.upsert(collection, doc, bytes, state);
+            bulk.upsert(collection, doc, bytes, state, record);
         } catch (DataException de) {
-            handleMalformed(record, de);
+            handleMalformed(record, de, bulk);
         }
     }
 
@@ -322,9 +336,9 @@ public final class SolrWriter implements AutoCloseable {
                     tomb.addField("id", id);
                     tomb.addField(kafkaOffsetVersionField, record.kafkaOffset());
                     tomb.addField(DELETED_MARKER_FIELD, true);
-                    bulk.upsert(collection, tomb, -1L, offsetTracker.track(record));
+                    bulk.upsert(collection, tomb, -1L, offsetTracker.track(record), record);
                 } else {
-                    bulk.delete(collection, id, offsetTracker.track(record));
+                    bulk.delete(collection, id, offsetTracker.track(record), record);
                 }
                 return;
             default:
@@ -332,11 +346,13 @@ public final class SolrWriter implements AutoCloseable {
         }
     }
 
-    private void handleMalformed(SinkRecord record, DataException de) {
+    private void handleMalformed(SinkRecord record, DataException de, SolrBulkProcessor bulk) {
         switch (behaviorOnMalformed) {
             case IGNORE:
+                bulk.dropUnconvertible(record, de);
                 return;
             case WARN:
+                bulk.dropUnconvertible(record, de);
                 log.warn("Skipping malformed record at {}-{}@{}: {}",
                         record.topic(), record.kafkaPartition(), record.kafkaOffset(), de.getMessage());
                 return;
@@ -352,6 +368,11 @@ public final class SolrWriter implements AutoCloseable {
 
     public void flushAsync() {
         forEachProcessor(SolrBulkProcessor::flushAsync);
+    }
+
+    /** See {@link SolrBulkProcessor#throwIfFatal()}. */
+    public void throwIfFatal() {
+        forEachProcessor(SolrBulkProcessor::throwIfFatal);
     }
 
     /** See {@link SolrBulkProcessor#flushIfLingerElapsed()}. */

@@ -28,6 +28,9 @@ public interface OffsetTracker extends AutoCloseable {
     /** Drop all bookkeeping for a partition (rebalance / partition revoked). */
     void closePartition(TopicPartition partition);
 
+    /** Drop every tracked state: after a failed flush Connect rewinds and redelivers, so none can be acked. */
+    default void reset() { /* nothing tracked by default */ }
+
     @Override
     default void close() { /* no-op by default */ }
 }

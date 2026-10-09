@@ -14,8 +14,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Validates the PRODUCTION Solr configset (ob-love-admin-backend/docker/solr/aggregated_user_data,
  * mirrored under embedded-solr-prod) actually loads and does what the connector needs: the
- * spatial location field powers geofilt, and a tombstone hard-deletes the user (soft-deleted
- * users are kept out of Solr entirely by the streamer, so there is no _deleted field to filter).
+ * spatial location field powers geofilt, and a tombstone hard-deletes the user (the streamer sends
+ * one when there is no user row; a deleted user stays a document with status DELETED).
  * A broken configset = a broken deploy, so we boot it for real.
  */
 class ProdConfigsetValidationTest {
@@ -53,6 +53,31 @@ class ProdConfigsetValidationTest {
 
     private static long hits(EmbeddedSolrServer solr, SolrQuery q) throws Exception {
         return solr.query(EmbeddedSolrSupport.CORE, q).getResults().getNumFound();
+    }
+
+    @Test
+    void aValueTooLongForOneSolrTermStillIndexesTheUser() throws Exception {
+        // Lucene refuses a term or docValues entry over 32766 UTF-8 bytes; uncapped, Solr rejected the whole user.
+        String essay = "€".repeat(12_000);   // 36,000 UTF-8 bytes
+        EmbeddedSolrServer solr = EmbeddedSolrSupport.start("embedded-solr-prod");
+        try (SolrWriter w = writer(solr)) {
+            Map<String, Object> fields = new LinkedHashMap<>();
+            fields.put("first_name", essay);                          // copied into first_name_sort
+            fields.put("custom_field_7_value_1", java.util.List.of(essay));
+            fields.put("custom_field_7_sort_value", essay);
+            fields.put("custom_fields", java.util.List.of(
+                    Map.of("custom_field_id", 7, "value", essay, "value_2", essay, "sort_value", essay)));
+            w.write(record("1", 10, fields));
+            w.flush();
+            solr.commit(EmbeddedSolrSupport.CORE);
+
+            assertThat(hits(solr, new SolrQuery("id:1"))).isEqualTo(1L);
+            Object src = solr.query(EmbeddedSolrSupport.CORE, new SolrQuery("id:1").setFields("_src"))
+                    .getResults().get(0).getFirstValue("_src");
+            assertThat((String) src).as("the stored source keeps the full value").contains(essay);
+        } finally {
+            EmbeddedSolrSupport.stop(solr);
+        }
     }
 
     @Test
@@ -95,6 +120,39 @@ class ProdConfigsetValidationTest {
                                     .setRows(1))
                     .getResults().get(0).getFirstValue("id").toString();
             assertThat(firstId).as("asc sort by sort_value -> Gold(id 1) first").isEqualTo("1");
+        } finally {
+            EmbeddedSolrSupport.stop(solr);
+        }
+    }
+
+    @Test
+    void searchAnythingFindsAUserByEveryValueAnAdminCanType() throws Exception {
+        // search_anything is one substring clause per word on the _text catch-all, as the backend sends it:
+        // a value that is not copied into _text can never find the user.
+        EmbeddedSolrServer solr = EmbeddedSolrSupport.start("embedded-solr-prod");
+        try (SolrWriter w = writer(solr)) {
+            Map<String, Object> fields = new LinkedHashMap<>();
+            fields.put("first_name", "Ada");
+            fields.put("middle_name", "Augusta");
+            fields.put("package_name", "Platinum");
+            fields.put("comments", java.util.List.of(Map.of("comment", "Met her at the Vienna gala")));
+            fields.put("promises", java.util.List.of(Map.of("name", "Weekly check-in")));
+            fields.put("custom_field_1_value_1", "4815162342");
+            fields.put("custom_field_5_value_5", "https://video.example/intro-clip");
+            fields.put("custom_field_7_value_7", Map.of("city", "Haifa", "state", "Galilee", "country", "Israel"));
+            fields.put("custom_field_10_value_10", "+972541234567");
+            fields.put("custom_field_12_value_12",
+                    java.util.List.of(Map.of("type", "instagram", "url", "https://instagram.com/ada.l")));
+            fields.put("custom_field_13_value_13", java.util.List.of("Hiking", "Opera"));
+            w.write(record("1", 10, fields));
+            w.flush();
+            solr.commit(EmbeddedSolrSupport.CORE);
+
+            for (String word : new String[] {"augusta", "platinum", "vienna", "check-in", "4815162342",
+                    "intro-clip", "haifa", "galilee", "israel", "541234567", "instagram.com/ada", "opera"}) {
+                String clause = "_text:*" + org.apache.solr.client.solrj.util.ClientUtils.escapeQueryChars(word) + "*";
+                assertThat(hits(solr, new SolrQuery("*:*").addFilterQuery(clause))).as(word).isEqualTo(1L);
+            }
         } finally {
             EmbeddedSolrSupport.stop(solr);
         }

@@ -33,12 +33,15 @@ public final class SolrRecordConverter {
 
     private static final String ID_FIELD = "id";
     private static final String MAPPING_VERSION_FIELD = "_mapping_version";
-    // Map-entry wrap keys (non-compact mode): each unrooted Map value is rendered as
-    // a {"key":..., "value":...} object so the dotted-prefix layout stays unambiguous.
+    // Non-compact mode: each entry of a nested map becomes `<prefix>.key` + `<prefix>.value`, the Elasticsearch
+    // connector's {"key","value"} documents flattened. Solr reads a Map field value as an atomic update.
     private static final String MAP_ENTRY_KEY = "key";
     private static final String MAP_ENTRY_VALUE = "value";
     // Solr atomic-update modifier — see Solr docs "Atomic Updates".
     private static final String ATOMIC_SET = "set";
+    // Solr's optimistic-concurrency field; the value 1 means "the document must already exist".
+    private static final String SOLR_VERSION_FIELD = "_version_";
+    private static final long MUST_EXIST = 1L;
 
     private final IdStrategy idStrategy;
     private final WriteMethod writeMethod;
@@ -112,8 +115,17 @@ public final class SolrRecordConverter {
             throw new DataException("Unsupported value type: " + value.getClass().getName());
         }
 
-        if (writeMethod == WriteMethod.ATOMIC_UPDATE) {
+        if (writeMethod != WriteMethod.INDEX) {
+            // Set only the fields this record carries: Solr keeps the rest of the stored document.
             applyAtomicUpdate(doc);
+            if (doc.size() == 1) {
+                // Nothing to set: without an atomic op Solr reads {id} as a full replacement and wipes the document.
+                return null;
+            }
+        }
+        if (writeMethod == WriteMethod.ATOMIC_UPDATE) {
+            // An existing document only: Solr answers 409 instead of creating a missing one.
+            doc.setField(SOLR_VERSION_FIELD, MUST_EXIST);
         }
         return doc;
     }
@@ -295,9 +307,51 @@ public final class SolrRecordConverter {
                 continue;
             }
             String name = top ? field.name() : prefix + "." + field.name();
-            plan.add(encoderFor(field, name));
+            FieldEncoder encoder = encoderFor(field, name);
+            plan.add(writeMethod == WriteMethod.INDEX ? encoder : clearingNull(field, name, encoder));
         }
         return plan.toArray(EMPTY_PLAN);
+    }
+
+    // UPSERT / ATOMIC_UPDATE: a field the record carries as null removes every Solr field it writes.
+    private FieldEncoder clearingNull(Field field, String name, FieldEncoder encoder) {
+        String[] written = solrFieldNames(field.schema(), name).toArray(new String[0]);
+        return (conv, doc, src) -> {
+            if (src.get(field) != null) {
+                encoder.encode(conv, doc, src);
+                return;
+            }
+            for (String n : written) conv.clearField(doc, n);
+        };
+    }
+
+    // The Solr fields a value of `schema` writes under `name`. A compact map's keys are data, not schema.
+    private List<String> solrFieldNames(Schema schema, String name) {
+        switch (schema.type()) {
+            case STRUCT: {
+                List<String> names = new java.util.ArrayList<>();
+                for (Field child : schema.fields()) names.addAll(solrFieldNames(child.schema(), name + "." + child.name()));
+                return names;
+            }
+            case ARRAY:
+                return solrFieldNames(schema.valueSchema(), name);
+            case MAP: {
+                if (compactMapEntries) return List.of();
+                List<String> names = new java.util.ArrayList<>(solrFieldNames(schema.keySchema(), name + "." + MAP_ENTRY_KEY));
+                names.addAll(solrFieldNames(schema.valueSchema(), name + "." + MAP_ENTRY_VALUE));
+                return names;
+            }
+            default:
+                return List.of(name);
+        }
+    }
+
+    // A field the record carries as null, sent as {"set": null}. A value added under the same name later
+    // replaces the null, so a null inside one array element never clears what another element carries.
+    void clearField(SolrInputDocument doc, String name) {
+        if (writeMethod != WriteMethod.INDEX && doc.getField(name) == null) {
+            addField(doc, name, null);
+        }
     }
 
     private FieldEncoder encoderFor(Field field, String name) {
@@ -375,6 +429,8 @@ public final class SolrRecordConverter {
 
     void addScalar(SolrInputDocument doc, String name, Object value, Schema schema) {
         if (value == null) {
+            // Schemaless: the key is the only field name the record gives.
+            clearField(doc, name);
             return;
         }
         if (schema != null && schema.name() != null) {
@@ -445,12 +501,12 @@ public final class SolrRecordConverter {
             return;
         }
         for (Map.Entry<?, ?> entry : map.entrySet()) {
-            // initialCapacity=4 avoids the resize that LinkedHashMap(2) would trigger
-            // on the second put (loadFactor 0.75 × 2 = threshold 1.5 < 2).
-            LinkedHashMap<String, Object> pair = new LinkedHashMap<>(4);
-            pair.put(MAP_ENTRY_KEY, entry.getKey());
-            pair.put(MAP_ENTRY_VALUE, entry.getValue());
-            addField(doc, prefix, pair);
+            // Skipped whole: a multi-valued field holds no null, and the two fields must stay aligned.
+            if (entry.getValue() == null) {
+                continue;
+            }
+            addScalar(doc, prefix + "." + MAP_ENTRY_KEY, entry.getKey(), null);
+            addScalar(doc, prefix + "." + MAP_ENTRY_VALUE, entry.getValue(), null);
         }
     }
 
@@ -463,9 +519,8 @@ public final class SolrRecordConverter {
             org.apache.solr.common.SolrInputField f = snap.get(i);
             String name = f.getName();
             if (ID_FIELD.equals(name)) continue;
-            Object original = f.getValue();
-            if (original == null) continue;
-            doc.setField(name, Map.of(ATOMIC_SET, original));
+            // A null becomes {"set": null}, which removes the field; Map.of rejects a null value.
+            doc.setField(name, java.util.Collections.singletonMap(ATOMIC_SET, f.getValue()));
         }
         snap.clear();
     }

@@ -41,6 +41,8 @@
 
         <kafka.version>3.5.1</kafka.version>
         <solr.version>9.4.1</solr.version>
+        <!-- The Jetty SolrJ ${solr.version} runs on; keep the two in step. -->
+        <jetty.version>10.0.19</jetty.version>
         <slf4j.version>1.7.36</slf4j.version>
         <jackson.version>2.15.3</jackson.version>
 
@@ -73,6 +75,12 @@
             <groupId>org.apache.solr</groupId>
             <artifactId>solr-solrj</artifactId>
             <version>${solr.version}</version>
+        </dependency>
+        <!-- SolrJ's own runtime Jetty, at compile scope: the client's SSL factory (SolrClientFactory) is a Jetty type. -->
+        <dependency>
+            <groupId>org.eclipse.jetty</groupId>
+            <artifactId>jetty-util</artifactId>
+            <version>${jetty.version}</version>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
@@ -121,6 +129,33 @@
             <groupId>org.apache.solr</groupId>
             <artifactId>solr-core</artifactId>
             <version>${solr.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- A real Connect worker and Kafka broker in-process (SolrSinkConnectWorkerTest), no Docker. The worker
+             runs without its REST server, so Connect's Jetty 9.4 is left out and SolrJ keeps its Jetty 10. -->
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>connect-runtime</artifactId>
+            <version>${kafka.version}</version>
+            <scope>test</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.eclipse.jetty</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka_2.13</artifactId>
+            <version>${kafka.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!-- The broker's Scala Jackson module must match jackson-databind, or Kafka refuses to start. -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.module</groupId>
+            <artifactId>jackson-module-scala_2.13</artifactId>
+            <version>${jackson.version}</version>
             <scope>test</scope>
         </dependency>
         <dependency>

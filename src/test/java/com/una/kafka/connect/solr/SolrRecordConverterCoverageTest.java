@@ -123,7 +123,7 @@ class SolrRecordConverterCoverageTest {
     }
 
     @Test
-    void nestedMapWithCompactDisabledProducesKeyValueEntries() {
+    void nestedMapWithCompactDisabledFlattensEachEntryToKeyAndValue() {
         Map<String, String> o = new HashMap<>();
         o.put(SolrSinkConfig.COMPACT_MAP_ENTRIES_CONFIG, "false");
         SolrRecordConverter c = new SolrRecordConverter(cfg(o));
@@ -135,10 +135,10 @@ class SolrRecordConverterCoverageTest {
         Struct v = new Struct(schema).put("attrs", attrs);
 
         SolrInputDocument doc = c.convert(rec(schema, v));
-        // Each entry becomes one map under field "attrs" — multi-value.
-        Collection<Object> vals = doc.getField("attrs").getValues();
-        assertThat(vals).hasSize(2);
-        assertThat(vals).allSatisfy(o2 -> assertThat(o2).isInstanceOf(Map.class));
+        // A Map field value reads to Solr as an atomic update, so each entry becomes a key and a value.
+        assertThat(doc.getField("attrs")).isNull();
+        assertThat(doc.getFieldValues("attrs.key")).containsExactly("color", "size");
+        assertThat(doc.getFieldValues("attrs.value")).containsExactly("red", "L");
     }
 
     @Test

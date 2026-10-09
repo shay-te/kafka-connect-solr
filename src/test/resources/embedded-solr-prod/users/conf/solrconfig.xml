@@ -1,9 +1,8 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!--
   Mirror of the PRODUCTION solrconfig (objective_love_web/docker/solr/aggregated_user_data).
-  Deletes are handled upstream: the streamer emits a Kafka tombstone for any soft-deleted user,
-  and the connector hard-deletes it in offset order (max.in.flight.requests=1). Solr only ever
-  holds live users, so there is no soft-delete marker to filter and no version constraint.
+  A deleted user stays a document with status DELETED; the streamer emits a Kafka tombstone only
+  when there is no user row, and the connector deletes it in offset order (max.in.flight.requests=1).
 -->
 <config>
   <luceneMatchVersion>9.8.0</luceneMatchVersion>
@@ -38,7 +37,21 @@
     <processor class="solr.RunUpdateProcessorFactory"/>
   </updateRequestProcessorChain>
 
-  <requestHandler name="/update" class="solr.UpdateRequestHandler"/>
+  <!-- The production string cap, mirrored: see the authoritative configset. -->
+  <updateProcessor class="solr.TruncateFieldUpdateProcessorFactory" name="cap-long-strings">
+    <str name="typeClass">solr.StrField</str>
+    <lst name="exclude">
+      <str name="fieldName">id</str>
+      <str name="fieldName">_src</str>
+    </lst>
+    <int name="maxLength">8000</int>
+  </updateProcessor>
+
+  <requestHandler name="/update" class="solr.UpdateRequestHandler">
+    <lst name="defaults">
+      <str name="post-processor">cap-long-strings</str>
+    </lst>
+  </requestHandler>
   <requestHandler name="/select" class="solr.SearchHandler">
     <lst name="defaults">
       <str name="echoParams">explicit</str>

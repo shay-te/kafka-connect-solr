@@ -42,9 +42,11 @@ public class SolrSinkConfig extends AbstractConfig {
     public static final String SSL_TRUSTSTORE_TYPE_CONFIG = "ssl.truststore.type";
     public static final String SSL_PROTOCOL_CONFIG = "ssl.protocol";
 
-    // -- Kerberos --
+    // -- Kerberos: the Elasticsearch connector's names, refused (no SPNEGO is wired onto the HTTP/2 client) --
     public static final String KERBEROS_PRINCIPAL_CONFIG = "kerberos.user.principal";
     public static final String KERBEROS_KEYTAB_PATH_CONFIG = "kerberos.keytab.path";
+    static final String KERBEROS_UNSUPPORTED = "Kerberos (SPNEGO) is not supported by this connector: no request "
+            + "would authenticate with it. Use 'connection.username' / 'connection.password'.";
 
     // -- Behaviour --
     public static final String KEY_IGNORE_CONFIG = "key.ignore";
@@ -67,6 +69,7 @@ public class SolrSinkConfig extends AbstractConfig {
     public static final String MAX_BUFFERED_RECORDS_CONFIG = "max.buffered.records";
     public static final String MAX_RETRIES_CONFIG = "max.retries";
     public static final String RETRY_BACKOFF_MS_CONFIG = "retry.backoff.ms";
+    public static final String RETRY_TIMEOUT_MS_CONFIG = "retry.timeout.ms";
 
     // -- Write strategy --
     public static final String WRITE_METHOD_CONFIG = "write.method";
@@ -134,6 +137,11 @@ public class SolrSinkConfig extends AbstractConfig {
     public enum CompressionAlgorithm {
         NONE, GZIP, ZSTD;
         public static CompressionAlgorithm parse(String s) { return valueOf(s.toUpperCase(Locale.ROOT)); }
+    }
+
+    /** Prints the configuration reference generated from {@link #config()}; committed as docs/configuration.rst. */
+    public static void main(String[] args) {
+        System.out.print(config().toEnrichedRst());
     }
 
     public static ConfigDef config() {
@@ -228,10 +236,10 @@ public class SolrSinkConfig extends AbstractConfig {
         g = "Kerberos";
         order = 0;
         def.define(KERBEROS_PRINCIPAL_CONFIG, Type.STRING, "", Importance.LOW,
-                "Kerberos principal. Enables SPNEGO over HTTP/2 when set.",
+                "Not supported: a non-empty value fails validation. Use connection.username / connection.password.",
                 g, ++order, Width.MEDIUM, "Kerberos principal");
         def.define(KERBEROS_KEYTAB_PATH_CONFIG, Type.STRING, "", Importance.LOW,
-                "Path to the keytab.",
+                "Not supported: a non-empty value fails validation. Use connection.username / connection.password.",
                 g, ++order, Width.LONG, "Keytab path");
 
         // -- Behaviour --
@@ -251,7 +259,7 @@ public class SolrSinkConfig extends AbstractConfig {
                 g, ++order, Width.LONG, "Per-topic ignore schema");
         def.define(COMPACT_MAP_ENTRIES_CONFIG, Type.BOOLEAN, true, Importance.LOW,
                 "true = flatten map fields with dotted-path keys. "
-                        + "false = emit each entry as a {key,value} struct.",
+                        + "false = each entry of a nested map becomes <field>.key and <field>.value.",
                 g, ++order, Width.SHORT, "Compact maps");
         def.define(DROP_INVALID_MESSAGE_CONFIG, Type.BOOLEAN, false, Importance.LOW,
                 "Alias for behavior.on.malformed.documents=ignore.",
@@ -303,7 +311,11 @@ public class SolrSinkConfig extends AbstractConfig {
                         + "=1.",
                 g, ++order, Width.SHORT, "Ordering lanes");
         def.define(MAX_BUFFERED_RECORDS_CONFIG, Type.INT, 20_000, Importance.MEDIUM,
-                "Maximum buffered records across all in-flight batches.",
+                "Maximum records held in the task's buffers, not yet sent to Solr; reaching it sends them. "
+                        + "Records already sent are held back by " + MAX_IN_FLIGHT_REQUESTS_CONFIG + ". With "
+                        + ORDERING_LANES_ENABLED_CONFIG + " every lane fills its own batch, so it must be at least "
+                        + BATCH_SIZE_CONFIG + " x " + MAX_IN_FLIGHT_REQUESTS_CONFIG + " (" + BATCH_SIZE_CONFIG
+                        + " without lanes).",
                 g, ++order, Width.SHORT, "Max buffered");
         // Range on the ConfigDef, not only in Validator: a task started without validation would
         // otherwise accept a negative value and fail every batch without ever reaching Solr.
@@ -313,12 +325,20 @@ public class SolrSinkConfig extends AbstractConfig {
         def.define(RETRY_BACKOFF_MS_CONFIG, Type.LONG, 200L, Importance.LOW,
                 "Initial backoff, doubles up to 30s.",
                 g, ++order, Width.SHORT, "Retry backoff");
+        def.define(RETRY_TIMEOUT_MS_CONFIG, Type.LONG, 600_000L, ConfigDef.Range.atLeast(-1), Importance.MEDIUM,
+                "How long the task keeps retrying while no write reaches Solr before it fails, so a stalled sink "
+                        + "shows as a FAILED task instead of RUNNING. -1 retries forever.",
+                g, ++order, Width.SHORT, "Retry timeout");
 
         // -- Write --
         g = "Write";
         order = 0;
         def.define(WRITE_METHOD_CONFIG, Type.STRING, "INDEX", Importance.MEDIUM,
-                "INDEX | UPSERT | ATOMIC_UPDATE.",
+                "INDEX replaces the whole document. UPSERT sets only the fields the record carries, removing those it "
+                        + "carries as null, and creates a missing document (the Elasticsearch connector's upsert). "
+                        + "ATOMIC_UPDATE sets them on an "
+                        + "existing document only: a record for a missing one is rejected (HTTP 409). With either, a "
+                        + "record that sets no field is skipped.",
                 g, ++order, Width.MEDIUM, "Write method");
         def.define(ID_STRATEGY_CONFIG, Type.STRING, "KAFKA_KEY", Importance.MEDIUM,
                 "KAFKA_KEY | RECORD_FIELD | TOPIC_PARTITION_OFFSET | UUID.",
@@ -509,6 +529,7 @@ public class SolrSinkConfig extends AbstractConfig {
     public int maxBufferedRecords() { return getInt(MAX_BUFFERED_RECORDS_CONFIG); }
     public int maxRetries() { return getInt(MAX_RETRIES_CONFIG); }
     public long retryBackoffMs() { return getLong(RETRY_BACKOFF_MS_CONFIG); }
+    public long retryTimeoutMs() { return getLong(RETRY_TIMEOUT_MS_CONFIG); }
 
     public WriteMethod writeMethod() { return WriteMethod.parse(getString(WRITE_METHOD_CONFIG)); }
     public IdStrategy idStrategy() {

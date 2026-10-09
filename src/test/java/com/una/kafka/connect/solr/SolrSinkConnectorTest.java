@@ -39,6 +39,9 @@ class SolrSinkConnectorTest {
         assertThat(configs).hasSize(3);
         configs.forEach(c -> assertThat(c.get(SolrSinkConfig.SOLR_COLLECTION_CONFIG))
                 .isEqualTo("users"));
+        // Each task registers its JMX metrics under its own id.
+        assertThat(configs).extracting(c -> c.get(SolrSinkTaskMetrics.TASK_ID_CONFIG))
+                .containsExactly("0", "1", "2");
         connector.stop();
     }
 

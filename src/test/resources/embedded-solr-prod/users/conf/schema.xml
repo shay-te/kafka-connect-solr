@@ -58,8 +58,8 @@
   <field name="last_name" type="text_ci" indexed="true" stored="false" multiValued="false"/>
   <field name="first_name_sort" type="string" indexed="false" stored="false" docValues="true" multiValued="false"/>
   <field name="last_name_sort"  type="string" indexed="false" stored="false" docValues="true" multiValued="false"/>
-  <copyField source="first_name" dest="first_name_sort"/>
-  <copyField source="last_name"  dest="last_name_sort"/>
+  <copyField source="first_name" dest="first_name_sort" maxChars="8000"/>
+  <copyField source="last_name"  dest="last_name_sort" maxChars="8000"/>
 
   <!-- Scalar sort/range columns pulled OUT of the multiValued catch-all (mirrors prod schema;
        see that file for the measurement rationale). -->
@@ -84,11 +84,24 @@
   <field name="_text" type="text_ci" indexed="true" stored="false" multiValued="true"/>
   <copyField source="email" dest="_text"/>
   <copyField source="first_name" dest="_text"/>
+  <copyField source="middle_name" dest="_text"/>
   <copyField source="last_name" dest="_text"/>
+  <copyField source="package_name" dest="_text"/>
+  <copyField source="comments.comment" dest="_text"/>
+  <copyField source="promises.name" dest="_text"/>
+  <copyField source="*_value_1" dest="_text"/>
   <copyField source="*_value_2" dest="_text"/>
   <copyField source="*_value_3" dest="_text"/>
   <copyField source="*_value_4" dest="_text"/>
+  <copyField source="*_value_5" dest="_text"/>
   <copyField source="*_value_6" dest="_text"/>
+  <copyField source="*_value_7.city" dest="_text"/>
+  <copyField source="*_value_7.state" dest="_text"/>
+  <copyField source="*_value_7.country" dest="_text"/>
+  <copyField source="*_value_10" dest="_text"/>
+  <copyField source="*_value_12.type" dest="_text"/>
+  <copyField source="*_value_12.url" dest="_text"/>
+  <copyField source="*_value_13" dest="_text"/>
 
   <dynamicField name="*_sort_value" type="string" indexed="false" stored="false" docValues="true" multiValued="false"/>
   <!-- NUMBER custom fields only: the numeric twin of *_sort_value (the text key sorts "10" before "2"). -->

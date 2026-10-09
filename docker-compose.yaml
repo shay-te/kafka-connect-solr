@@ -17,10 +17,29 @@ services:
       timeout: 5s
       retries: 10
 
+  # One KRaft node, broker and controller in one: enough for the quick start.
+  kafka:
+    image: confluentinc/cp-kafka:7.5.1
+    restart: unless-stopped
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
   kafka-connect-solr:
     build:
       context: .
     depends_on:
+      - kafka
       - solr
     ports:
       - "8084:8083"
@@ -31,6 +50,9 @@ services:
       CONNECT_CONFIG_STORAGE_TOPIC: kafka-connect-solr-configs
       CONNECT_OFFSET_STORAGE_TOPIC: kafka-connect-solr-offsets
       CONNECT_STATUS_STORAGE_TOPIC: kafka-connect-solr-status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
       CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
       CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
       CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"

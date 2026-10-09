@@ -228,6 +228,24 @@ class SolrWriterRecordShapesEmbeddedTest {
     }
 
     @Test
+    void aNestedMapIndexesAsKeyAndValueFieldsWhenEntriesAreNotCompact() throws Exception {
+        // Its one entry reached Solr as a Map value, which Solr reads as an atomic update and rejects (HTTP 400).
+        Map<String, Object> attrs = new LinkedHashMap<>();
+        attrs.put("hair", "brown");
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("name", "Dana");
+        value.put("attrs", attrs);
+        try (SolrWriter w = writer(config(SolrSinkConfig.COMPACT_MAP_ENTRIES_CONFIG, "false"))) {
+            w.write(record("m1", null, value, 1, new ConnectHeaders()));
+            w.flush();
+            assertThat(w.recordsWritten()).isEqualTo(1);
+        }
+        SolrDocument doc = query("id:m1").get(0);
+        assertThat(doc.getFieldValues("attrs.key")).containsExactly("hair");
+        assertThat(doc.getFieldValues("attrs.value")).containsExactly("brown");
+    }
+
+    @Test
     void recordFieldIdWithAnEmptyPathIsMalformedAndSkipped() throws Exception {
         try (SolrWriter w = writer(config(
                 SolrSinkConfig.ID_STRATEGY_CONFIG, "RECORD_FIELD",

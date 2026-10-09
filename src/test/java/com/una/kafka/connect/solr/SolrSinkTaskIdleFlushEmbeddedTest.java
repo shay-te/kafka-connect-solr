@@ -5,6 +5,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.connect.data.Schema;
 import org.apache.kafka.connect.data.SchemaBuilder;
 import org.apache.kafka.connect.data.Struct;
+import org.apache.kafka.connect.errors.ConnectException;
 import org.apache.kafka.connect.errors.RetriableException;
 import org.apache.kafka.connect.sink.SinkRecord;
 import org.apache.solr.client.solrj.SolrClient;
@@ -123,7 +124,7 @@ class SolrSinkTaskIdleFlushEmbeddedTest {
     }
 
     @Test
-    void idleFlushAfterAnInterruptedStopIsWrappedAsRetriable() throws Exception {
+    void idleFlushAfterAnInterruptedStopFailsTheTask() throws Exception {
         EmbeddedTask task = new EmbeddedTask();
         task.start(props(
                 SolrSinkConfig.MAX_IN_FLIGHT_REQUESTS_CONFIG, "2",
@@ -133,8 +134,10 @@ class SolrSinkTaskIdleFlushEmbeddedTest {
         task.stop();
         waitPastLinger();
 
+        // A stopped executor is not transient: retrying would loop forever.
         assertThatThrownBy(() -> task.put(Collections.emptyList()))
-                .isInstanceOf(RetriableException.class)
+                .isInstanceOf(ConnectException.class)
+                .isNotInstanceOf(RetriableException.class)
                 .hasMessage("Idle linger flush failed")
                 .hasCauseInstanceOf(RejectedExecutionException.class);
         assertThat(found("id:ct-2")).as("never sent, so its offset was never committed").isZero();

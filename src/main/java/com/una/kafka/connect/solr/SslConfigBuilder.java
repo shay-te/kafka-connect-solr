@@ -6,7 +6,6 @@ import javax.net.ssl.TrustManagerFactory;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.security.KeyStore;
-import java.security.SecureRandom;
 import java.util.Arrays;
 
 public final class SslConfigBuilder {
@@ -18,10 +17,11 @@ public final class SslConfigBuilder {
         KeyManagerFactory kmf = loadKeyManagers(config);
         TrustManagerFactory tmf = loadTrustManagers(config);
         SSLContext ctx = SSLContext.getInstance(config.sslProtocol());
+        // The default SecureRandom: getInstanceStrong() can block task start on a host short of entropy.
         ctx.init(
                 kmf == null ? null : kmf.getKeyManagers(),
                 tmf == null ? null : tmf.getTrustManagers(),
-                SecureRandom.getInstanceStrong());
+                null);
         return ctx;
     }
 

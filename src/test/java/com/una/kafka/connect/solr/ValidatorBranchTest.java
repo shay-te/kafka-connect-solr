@@ -51,7 +51,7 @@ class ValidatorBranchTest {
 
     @Test
     void onlyOneOfMaxBufferedOrBatchSetIsTolerant() {
-        // Both must be non-null for the cross-check to fire.
+        // An unset max.buffered.records is its default, 20000, which holds a batch of 100.
         Map<String, String> p = new HashMap<>();
         p.put(SolrSinkConfig.SOLR_URL_CONFIG, "http://x");
         p.put(SolrSinkConfig.BATCH_SIZE_CONFIG, "100");

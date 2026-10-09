@@ -1,5 +1,8 @@
 package com.una.kafka.connect.solr;
 
+import org.apache.solr.client.solrj.SolrClient;
+import org.apache.solr.client.solrj.impl.Http2SolrClient;
+import org.eclipse.jetty.client.HttpClient;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -8,6 +11,7 @@ import javax.net.ssl.SSLServerSocket;
 import javax.net.ssl.SSLSocket;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -53,6 +57,27 @@ class SslConfigBuilderHandshakeTest {
         SSLContext serverCtx = SslConfigBuilder.build(config(stores.keystore.toString(), null, TestKeystores.PASSWORD));
         SSLContext clientCtx = SslConfigBuilder.build(config(null, stores.truststore.toString(), TestKeystores.PASSWORD));
 
+        assertThat(handshake(serverCtx, clientCtx)).isEqualTo("TLSv1.3");
+    }
+
+    @Test
+    void theHttpClientTrustsTheServerThroughTheTruststoreAlone() throws Exception {
+        // A private CA in ssl.truststore.* only: SolrJ's SSLConfig applied a truststore only with client auth on.
+        SSLContext serverCtx = SslConfigBuilder.build(config(stores.keystore.toString(), null, TestKeystores.PASSWORD));
+        try (SolrClient solr = SolrClientFactory.create(config(null, stores.truststore.toString(), TestKeystores.PASSWORD))) {
+            assertThat(handshake(serverCtx, httpClientContext(solr))).isEqualTo("TLSv1.3");
+        }
+    }
+
+    /** The SSLContext the client's Jetty HttpClient really uses; Http2SolrClient keeps that client package-private. */
+    private static SSLContext httpClientContext(SolrClient solr) throws Exception {
+        Method getHttpClient = Http2SolrClient.class.getDeclaredMethod("getHttpClient");
+        getHttpClient.setAccessible(true);
+        return ((HttpClient) getHttpClient.invoke(solr)).getSslContextFactory().getSslContext();
+    }
+
+    /** A real TLS handshake over loopback; returns the protocol the server negotiated. */
+    private static String handshake(SSLContext serverCtx, SSLContext clientCtx) throws Exception {
         try (SSLServerSocket server = (SSLServerSocket) serverCtx.getServerSocketFactory()
                 .createServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
             CompletableFuture<String> served = CompletableFuture.supplyAsync(() -> {
@@ -77,7 +102,7 @@ class SslConfigBuilderHandshakeTest {
                 assertThat(new String(buf, 0, n, StandardCharsets.UTF_8)).isEqualTo("ack:ping");
                 assertThat(client.getSession().getPeerCertificates()).hasSize(1);
             }
-            assertThat(served.get(30, TimeUnit.SECONDS)).isEqualTo("TLSv1.3");
+            return served.get(30, TimeUnit.SECONDS);
         }
     }
 

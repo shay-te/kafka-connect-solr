@@ -115,10 +115,9 @@ class SolrBulkProcessorEmbeddedTest {
         try (SolrBulkProcessor bulk = new SolrBulkProcessor(solr, config(SolrSinkConfig.MAX_RETRIES_CONFIG, "0"))) {
             OffsetState s = new OffsetState(new TopicPartition("users", 0), 3L);
             bulk.upsert("no_such_core", doc("x", "y", 1), s);
-            // No-such-core is permanent -> non-retriable (retrying can never create the core).
+            // The embedded server answers a missing core with its own 500: retried like any 5xx.
             org.assertj.core.api.Assertions.assertThatThrownBy(bulk::flushSync)
-                    .isInstanceOf(org.apache.kafka.connect.errors.ConnectException.class)
-                    .isNotInstanceOf(org.apache.kafka.connect.errors.RetriableException.class);
+                    .isInstanceOf(org.apache.kafka.connect.errors.RetriableException.class);
             assertThat(bulk.recordsFailed()).isGreaterThanOrEqualTo(1);
             assertThat(s.isAcked()).isFalse(); // never acked -> Kafka Connect will redeliver
         }
@@ -129,8 +128,7 @@ class SolrBulkProcessorEmbeddedTest {
         try (SolrBulkProcessor bulk = new SolrBulkProcessor(solr, config(SolrSinkConfig.MAX_RETRIES_CONFIG, "0"))) {
             bulk.delete("no_such_core", "id1", new OffsetState(new TopicPartition("users", 0), 4L));
             org.assertj.core.api.Assertions.assertThatThrownBy(bulk::flushSync)
-                    .isInstanceOf(org.apache.kafka.connect.errors.ConnectException.class)
-                    .isNotInstanceOf(org.apache.kafka.connect.errors.RetriableException.class);
+                    .isInstanceOf(org.apache.kafka.connect.errors.RetriableException.class);
             assertThat(bulk.recordsFailed()).isGreaterThanOrEqualTo(1);
         }
     }
