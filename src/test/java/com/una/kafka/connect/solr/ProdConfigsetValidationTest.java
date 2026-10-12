@@ -140,7 +140,8 @@ class ProdConfigsetValidationTest {
             fields.put("custom_field_1_value_1", "4815162342");
             fields.put("custom_field_5_value_5", "https://video.example/intro-clip");
             fields.put("custom_field_7_value_7", Map.of("city", "Haifa", "state", "Galilee", "country", "Israel"));
-            fields.put("custom_field_10_value_10", "+972541234567");
+            // The streamer passes a phone through as the stored {country_code, number} object.
+            fields.put("custom_field_10_value_10", Map.of("country_code", "972", "number", "541234567"));
             fields.put("custom_field_12_value_12",
                     java.util.List.of(Map.of("type", "instagram", "url", "https://instagram.com/ada.l")));
             fields.put("custom_field_13_value_13", java.util.List.of("Hiking", "Opera"));

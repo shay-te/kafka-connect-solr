@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.una.kafka.connect.solr.SolrSinkConfig.BehaviorOnMalformed;
 import com.una.kafka.connect.solr.SolrSinkConfig.BehaviorOnNullValues;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.connect.errors.DataException;
 import org.apache.kafka.connect.sink.ErrantRecordReporter;
 import org.apache.kafka.connect.header.Header;
@@ -90,6 +91,10 @@ public final class SolrWriter implements AutoCloseable {
         this.externalVersioningEnabled = config.externalVersioningEnabled();
         this.externalVersionHeader = config.externalVersionHeader();
         this.kafkaOffsetVersionField = config.kafkaOffsetVersionField();
+        if (!kafkaOffsetVersionField.isEmpty() && config.writeMethod() != SolrSinkConfig.WriteMethod.INDEX) {
+            // Validation refuses this too, but a config stored before it did is not validated again on restart.
+            throw new ConfigException(SolrSinkConfig.VERSIONED_TOMBSTONES_NEED_INDEX);
+        }
         this.sourceField = config.sourceField();
         this.sourceExcludePrefixes = config.sourceExcludeFields().toArray(new String[0]);
         this.behaviorOnNullValues = config.behaviorOnNullValues();

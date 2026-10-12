@@ -25,12 +25,14 @@ public final class SolrSchemaManager {
 
     private final SolrClient client;
     private final boolean autoEvolve;
+    private final boolean compactMapEntries;
     private final Map<String, Set<String>> knownFieldsPerCollection = new HashMap<>();
     private final Map<String, Set<Schema>> evolvedSchemasPerCollection = new HashMap<>();
 
     public SolrSchemaManager(SolrClient client, SolrSinkConfig config) {
         this.client = client;
         this.autoEvolve = config.schemaAutoEvolve();
+        this.compactMapEntries = config.compactMapEntries();
     }
 
     public void evolveIfNeeded(String collection, Schema schema) {
@@ -44,7 +46,7 @@ public final class SolrSchemaManager {
         try {
             Set<String> known = knownFieldsPerCollection.computeIfAbsent(collection,
                     k -> loadKnown(collection));
-            collectAndAdd(schema, "", collection, known);
+            collectAndAdd(schema, "", false, collection, known);
             if (seen == null) {
                 seen = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
                 evolvedSchemasPerCollection.put(collection, seen);
@@ -60,43 +62,72 @@ public final class SolrSchemaManager {
         try {
             SchemaResponse.FieldsResponse resp = new SchemaRequest.Fields().process(client, collection);
             resp.getFields().forEach(f -> set.add(String.valueOf(f.get("name"))));
+            new SchemaRequest.DynamicFields().process(client, collection).getDynamicFields()
+                    .forEach(f -> set.add(String.valueOf(f.get("name"))));
         } catch (Exception e) {
             log.warn("Could not read existing schema for {}: {}", collection, e.getMessage());
         }
         return set;
     }
 
-    private void collectAndAdd(Schema schema, String prefix, String collection, Set<String> known) {
-        if (schema.type() == Schema.Type.STRUCT) {
-            for (Field field : schema.fields()) {
-                String name = prefix.isEmpty() ? field.name() : prefix + "." + field.name();
-                Schema sub = field.schema();
-                if (sub.type() == Schema.Type.STRUCT) {
-                    collectAndAdd(sub, name, collection, known);
-                } else {
-                    ensureField(collection, name, sub, known);
+    // Mirrors SolrRecordConverter's flattening: nested structs become dotted names, every array element writes the
+    // same names (so they are multi-valued), and a map writes `<map>.<key>` (compact) or `<map>.key`/`<map>.value`.
+    private void collectAndAdd(Schema schema, String name, boolean multiValued, String collection, Set<String> known) {
+        switch (schema.type()) {
+            case STRUCT:
+                for (Field field : schema.fields()) {
+                    String child = name.isEmpty() ? field.name() : name + "." + field.name();
+                    collectAndAdd(field.schema(), child, multiValued, collection, known);
                 }
-            }
-        } else {
-            ensureField(collection, prefix, schema, known);
+                return;
+            case ARRAY:
+                collectAndAdd(schema.valueSchema(), name, true, collection, known);
+                return;
+            case MAP:
+                if (name.isEmpty()) {
+                    return;
+                }
+                if (compactMapEntries) {
+                    // The keys are data, so every `<map>.<key>` (and anything under it) is one dynamic field.
+                    ensureField(collection, name + ".*", mapValueType(schema.valueSchema()), true, true, known);
+                } else {
+                    collectAndAdd(schema.keySchema(), name + ".key", true, collection, known);
+                    collectAndAdd(schema.valueSchema(), name + ".value", true, collection, known);
+                }
+                return;
+            default:
+                ensureField(collection, name, solrTypeFor(schema), multiValued, false, known);
         }
     }
 
-    private void ensureField(String collection, String name, Schema schema, Set<String> known) {
+    // A map of structs, maps or arrays of them writes several value types under one pattern: string takes them all.
+    private static String mapValueType(Schema valueSchema) {
+        Schema element = valueSchema.type() == Schema.Type.ARRAY ? valueSchema.valueSchema() : valueSchema;
+        Schema.Type type = element.type();
+        return type == Schema.Type.STRUCT || type == Schema.Type.MAP || type == Schema.Type.ARRAY
+                ? "string" : solrTypeFor(element);
+    }
+
+    private void ensureField(String collection, String name, String type, boolean multiValued, boolean dynamic,
+                             Set<String> known) {
         if (name.isEmpty() || known.contains(name)) {
             return;
         }
         Map<String, Object> attrs = new LinkedHashMap<>();
         attrs.put("name", name);
-        attrs.put("type", solrTypeFor(schema));
+        attrs.put("type", type);
         attrs.put("stored", true);
         attrs.put("indexed", true);
-        if (schema.type() == Schema.Type.ARRAY) {
+        if (multiValued) {
             attrs.put("multiValued", true);
         }
         try {
-            new SchemaRequest.AddField(attrs).process(client, collection);
-            log.info("Added Solr field {} ({}) to collection {}", name, attrs.get("type"), collection);
+            if (dynamic) {
+                new SchemaRequest.AddDynamicField(attrs).process(client, collection);
+            } else {
+                new SchemaRequest.AddField(attrs).process(client, collection);
+            }
+            log.info("Added Solr {}field {} ({}) to collection {}", dynamic ? "dynamic " : "", name, type, collection);
         } catch (Exception e) {
             // Mark as known either way so we don't retry every record. Log at WARN
             // (not DEBUG) so genuine failures - permission denied, schema invalid -

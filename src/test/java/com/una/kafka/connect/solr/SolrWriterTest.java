@@ -165,6 +165,19 @@ class SolrWriterTest {
     }
 
     @Test
+    void aWriterRefusesVersionedTombstonesUnderAPartialWriteMethod() {
+        // A config stored before validation refused this is not validated again when the task restarts.
+        for (String method : new String[] {"UPSERT", "ATOMIC_UPDATE"}) {
+            Map<String, String> overrides = new HashMap<>();
+            overrides.put(SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG, "_offset_ver");
+            overrides.put(SolrSinkConfig.WRITE_METHOD_CONFIG, method);
+            assertThatThrownBy(() -> new SolrWriter(mock(SolrClient.class), cfg(overrides))).as(method)
+                    .isInstanceOf(org.apache.kafka.common.config.ConfigException.class)
+                    .hasMessageContaining("write.method=INDEX");
+        }
+    }
+
+    @Test
     void aReporterThatRefusesAnUnconvertibleRecordStopsTheTaskInsteadOfDroppingIt() {
         // errors.tolerance=none with a DLQ configured: the reporter refuses, so nothing may be dropped.
         ErrantRecordReporter reporter = mock(ErrantRecordReporter.class);

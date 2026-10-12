@@ -97,6 +97,20 @@ class ValidatorCoverageTest {
     }
 
     @Test
+    void versionedTombstonesNeedTheIndexWriteMethod() {
+        Map<String, String> p = new HashMap<>();
+        p.put(SolrSinkConfig.SOLR_URL_CONFIG, "http://x");
+        p.put(SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG, "_offset_ver");
+        for (String method : new String[] {"UPSERT", "ATOMIC_UPDATE"}) {
+            p.put(SolrSinkConfig.WRITE_METHOD_CONFIG, method);
+            assertThat(errors(validate(p), SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG)).as(method)
+                    .anyMatch(s -> s.contains("write.method=INDEX"));
+        }
+        p.put(SolrSinkConfig.WRITE_METHOD_CONFIG, "INDEX");
+        assertThat(errors(validate(p), SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG)).isEmpty();
+    }
+
+    @Test
     void aBatchLargerThanTheDefaultBufferIsRefusedWhenTheBufferIsLeftUnset() {
         Map<String, String> p = new HashMap<>();
         p.put(SolrSinkConfig.SOLR_URL_CONFIG, "http://x");

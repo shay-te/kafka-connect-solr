@@ -64,17 +64,17 @@ class SolrSchemaManagerCoverageTest {
     @Test
     void addFieldFailureIsSwallowedAndMarkedKnown() throws Exception {
         SolrClient client = mock(SolrClient.class);
-        // First request is the schema probe (returns empty fields). Subsequent AddField requests throw.
+        // The first two requests are the schema probes (fields, dynamic fields). Subsequent AddField requests throw.
         java.util.concurrent.atomic.AtomicInteger callCount = new java.util.concurrent.atomic.AtomicInteger();
         when(client.request(any(SolrRequest.class), any())).thenAnswer(invocation -> {
-            if (callCount.getAndIncrement() == 0) return emptySchema();
+            if (callCount.getAndIncrement() < 2) return emptySchema();
             throw new RuntimeException("add failed");
         });
         SolrSchemaManager schemaManager = new SolrSchemaManager(client, cfg(new HashMap<>()));
         Schema valueSchema = SchemaBuilder.struct().field("y", Schema.INT64_SCHEMA).build();
         schemaManager.evolveIfNeeded("c", valueSchema);
-        // No exception leaked; both probe and AddField fired.
-        verify(client, times(2)).request(any(SolrRequest.class), any());
+        // No exception leaked; both probes and the AddField fired.
+        verify(client, times(3)).request(any(SolrRequest.class), any());
     }
 
     @Test
@@ -122,20 +122,20 @@ class SolrSchemaManagerCoverageTest {
                 .build();
         Schema outer = SchemaBuilder.struct().field("addr", inner).build();
         m.evolveIfNeeded("c", outer);
-        // Probe + AddField for addr.city + AddField for addr.zip = 3.
-        verify(client, times(3)).request(any(SolrRequest.class), any());
+        // Two probes + AddField for addr.city + AddField for addr.zip = 4.
+        verify(client, times(4)).request(any(SolrRequest.class), any());
     }
 
     @Test
     void nonStructTopLevelEvolveUsesEmptyName() throws Exception {
         // A non-STRUCT schema falls through to ensureField with empty name — name.isEmpty() short-circuits,
-        // so no AddField issued. The schema probe still fires (loadKnown).
+        // so no AddField issued. The schema probes still fire (loadKnown).
         SolrClient client = mock(SolrClient.class);
         when(client.request(any(SolrRequest.class), any())).thenReturn(emptySchema());
         SolrSchemaManager m = new SolrSchemaManager(client, cfg(new HashMap<>()));
         m.evolveIfNeeded("c", Schema.STRING_SCHEMA);
-        // Exactly one request: the schema probe. No AddField since the name is empty.
-        verify(client, times(1)).request(any(SolrRequest.class), any());
+        // Exactly the two schema probes (fields, dynamic fields). No AddField since the name is empty.
+        verify(client, times(2)).request(any(SolrRequest.class), any());
     }
 
     @Test
@@ -158,12 +158,14 @@ class SolrSchemaManagerCoverageTest {
         Schema arr = SchemaBuilder.array(Schema.STRING_SCHEMA).build();
         Schema schema = SchemaBuilder.struct().field("tags", arr).build();
         m.evolveIfNeeded("c", schema);
-        verify(client, times(2)).request(any(SolrRequest.class), any());
+        // Two probes + AddField for tags.
+        verify(client, times(3)).request(any(SolrRequest.class), any());
     }
 
     private NamedList<Object> emptySchema() {
         NamedList<Object> r = new NamedList<>();
         r.add("fields", java.util.Collections.emptyList());
+        r.add("dynamicFields", java.util.Collections.emptyList());
         return r;
     }
 }

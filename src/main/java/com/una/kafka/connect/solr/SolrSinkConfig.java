@@ -47,6 +47,11 @@ public class SolrSinkConfig extends AbstractConfig {
     public static final String KERBEROS_KEYTAB_PATH_CONFIG = "kerberos.keytab.path";
     static final String KERBEROS_UNSUPPORTED = "Kerberos (SPNEGO) is not supported by this connector: no request "
             + "would authenticate with it. Use 'connection.username' / 'connection.password'.";
+    // A partial update leaves _deleted:true on a re-created user, and ATOMIC_UPDATE updates the tombstone instead of
+    // answering 409: Solr's "must exist" cannot tell a tombstone from a live document.
+    static final String VERSIONED_TOMBSTONES_NEED_INDEX = "'" + SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG
+            + "' needs " + SolrSinkConfig.WRITE_METHOD_CONFIG + "=INDEX: its deletes are tombstone documents, which "
+            + "only a whole-document write replaces.";
 
     // -- Behaviour --
     public static final String KEY_IGNORE_CONFIG = "key.ignore";
@@ -366,7 +371,8 @@ public class SolrSinkConfig extends AbstractConfig {
                 "When set, every document is stamped with its Kafka offset in this field. Pair it with "
                         + "a Solr DocBasedVersionConstraints update processor (ignoreOldUpdates=true) on the "
                         + "same field so that with max.in.flight.requests > 1, an out-of-order (older-offset) "
-                        + "write can never overwrite a newer version of the same id. Empty = disabled.",
+                        + "write can never overwrite a newer version of the same id. Deletes then become "
+                        + "tombstone documents, so it needs " + WRITE_METHOD_CONFIG + "=INDEX. Empty = disabled.",
                 g, ++order, Width.MEDIUM, "Kafka offset version field");
         def.define(SOURCE_FIELD_CONFIG, Type.STRING, "", Importance.MEDIUM,
                 "When set, the record value is stored verbatim as a JSON string in this field (a "

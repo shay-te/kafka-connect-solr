@@ -49,6 +49,16 @@ class SolrSchemaEvolveManagedEmbeddedTest {
             .field("nickname", Schema.OPTIONAL_STRING_SCHEMA)
             .build();
 
+    private static final Schema ORDER = SchemaBuilder.struct().name("order")
+            .field("sku", Schema.STRING_SCHEMA)
+            .field("qty", Schema.INT32_SCHEMA)
+            .build();
+    private static final Schema CUSTOMER = SchemaBuilder.struct().name("customer")
+            .field("id", Schema.STRING_SCHEMA)
+            .field("orders", SchemaBuilder.array(ORDER).build())
+            .field("attributes", SchemaBuilder.map(Schema.STRING_SCHEMA, Schema.STRING_SCHEMA).build())
+            .build();
+
     private EmbeddedSolrServer solr;
 
     @BeforeEach
@@ -117,6 +127,24 @@ class SolrSchemaEvolveManagedEmbeddedTest {
         assertThat(solrField("address.city").get("type")).isEqualTo("string");
         assertThat(solrField("tags").get("multiValued")).isEqualTo(true);
         assertThat(found("age:34 AND active:true AND address.city:Beersheba")).isEqualTo(1);
+    }
+
+    @Test
+    void arraysOfStructsAndMapsGetTheFieldNamesTheConverterWrites() throws Exception {
+        // The converter writes `<array>.<field>` for every element and `<map>.<key>` for every entry.
+        Struct customer = new Struct(CUSTOMER)
+                .put("id", "c1")
+                .put("orders", Arrays.asList(new Struct(ORDER).put("sku", "SKU-1").put("qty", 2),
+                        new Struct(ORDER).put("sku", "SKU-2").put("qty", 5)))
+                .put("attributes", Map.of("tier", "gold"));
+        try (SolrWriter w = writer(config())) {
+            w.write(new SinkRecord("users", 0, Schema.STRING_SCHEMA, "c1", CUSTOMER, customer, 1));
+            w.flush();
+            assertThat(w.recordsWritten()).isEqualTo(1);
+        }
+        assertThat(solrField("orders.qty").get("type")).isEqualTo("pint");
+        assertThat(solrField("orders.qty").get("multiValued")).isEqualTo(true);
+        assertThat(found("orders.sku:SKU-2 AND orders.qty:5 AND attributes.tier:gold")).isEqualTo(1);
     }
 
     @Test

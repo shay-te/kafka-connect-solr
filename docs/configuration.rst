@@ -373,7 +373,7 @@ Write
   * Importance: low
 
 ``kafka.offset.version.field``
-  When set, every document is stamped with its Kafka offset in this field. Pair it with a Solr DocBasedVersionConstraints update processor (ignoreOldUpdates=true) on the same field so that with max.in.flight.requests > 1, an out-of-order (older-offset) write can never overwrite a newer version of the same id. Empty = disabled.
+  When set, every document is stamped with its Kafka offset in this field. Pair it with a Solr DocBasedVersionConstraints update processor (ignoreOldUpdates=true) on the same field so that with max.in.flight.requests > 1, an out-of-order (older-offset) write can never overwrite a newer version of the same id. Deletes then become tombstone documents, so it needs write.method=INDEX. Empty = disabled.
 
   * Type: string
   * Default: ""

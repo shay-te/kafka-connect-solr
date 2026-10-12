@@ -99,6 +99,7 @@
   <copyField source="*_value_7.state" dest="_text"/>
   <copyField source="*_value_7.country" dest="_text"/>
   <copyField source="*_value_10" dest="_text"/>
+  <copyField source="*_value_10.number" dest="_text"/>
   <copyField source="*_value_12.type" dest="_text"/>
   <copyField source="*_value_12.url" dest="_text"/>
   <copyField source="*_value_13" dest="_text"/>
@@ -116,6 +117,9 @@
   <dynamicField name="*_value_1"  type="string"  indexed="true" stored="false" multiValued="true"/>
   <dynamicField name="*_value_5"  type="text_ci" indexed="true" stored="false" multiValued="true"/>
   <dynamicField name="*_value_10" type="string"  indexed="true" stored="false" multiValued="true"/>
+  <!-- PHONE_NUMBER is stored as {country_code, number}, which the sink flattens to dotted names. -->
+  <dynamicField name="*_value_10.number"       type="string" indexed="true" stored="false" multiValued="true"/>
+  <dynamicField name="*_value_10.country_code" type="string" indexed="true" stored="false" multiValued="true"/>
   <!-- Free text a person types, searched as "contains": case-insensitive like *_value_2/3.
        PHOTO and the ADDRESS / SOCIAL_NETWORKS sub-fields (the sink flattens them to dotted names)
        otherwise fall to the catch-all string, where "tel aviv" never finds "Tel Aviv". Sorting

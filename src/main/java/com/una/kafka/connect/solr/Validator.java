@@ -25,6 +25,7 @@ public final class Validator {
         rejectKerberos(byName, props);
         sanityCheckThroughput(byName, props);
         requireOrderingSafety(byName, props);
+        requireIndexForVersionedTombstones(byName, props);
         sanityCheckRegexCollection(byName, props);
 
         return base;
@@ -146,6 +147,14 @@ public final class Validator {
                             + "' (with a DocBasedVersionConstraints processor on that field), set '"
                             + SolrSinkConfig.ORDERING_LANES_ENABLED_CONFIG
                             + "=true', or use max.in.flight.requests=1.");
+        }
+    }
+
+    private static void requireIndexForVersionedTombstones(Map<String, ConfigValue> v, Map<String, String> p) {
+        String method = p.get(SolrSinkConfig.WRITE_METHOD_CONFIG);
+        if (!nullOrEmpty(p.get(SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG)) && !nullOrEmpty(method)
+                && !"INDEX".equalsIgnoreCase(method.trim())) {
+            err(v, SolrSinkConfig.KAFKA_OFFSET_VERSION_FIELD_CONFIG, SolrSinkConfig.VERSIONED_TOMBSTONES_NEED_INDEX);
         }
     }
 
